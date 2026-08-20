@@ -1,0 +1,56 @@
+# Node
+node_modules/
+dist/
+build/
+.npm/
+.env
+.env.*
+.DS_Store
+.vscode/
+.idea/
+*.log
+
+# TypeScript
+*.tsbuildinfo
+
+# Vite / frontend
+/dist
+/.vite
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Python packaging
+*.egg-info/
+
+# Prisma
+node_modules/
+prisma/migrations/
+
+# Mac
+.DS_Store
+
+# Misc
+coverage/
+.cache
+
+# Local IDE
+.vscode/
+
+# Ignore secrets
+secrets/
+
+# Yarn
+yarn-error.log
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+
