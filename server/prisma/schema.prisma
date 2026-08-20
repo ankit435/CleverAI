@@ -1,0 +1,160 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int          @id @default(autoincrement())
+  name         String
+  email        String       @unique
+  passwordHash String?      @map("password_hash")
+  googleId     String?      @unique @map("google_id")
+  avatarUrl    String?      @map("avatar_url")
+  plan         String       @default("Free")
+  isActive     Boolean      @default(true) @map("is_active")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @default(now()) @updatedAt @map("updated_at")
+  lastLoginAt  DateTime?    @map("last_login_at")
+
+  sessions     Session[]
+  threads      ChatThread[]
+  agentRuns    AgentRun[]
+  documents    Document[]
+
+  @@map("users")
+}
+
+model Session {
+  id          String    @id @default(uuid())
+  userId      Int       @map("user_id")
+  tokenHash   String    @unique @map("token_hash")
+  userAgent   String?   @map("user_agent")
+  ipAddress   String?   @map("ip_address")
+  expiresAt   DateTime  @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  lastUsedAt  DateTime  @default(now()) @map("last_used_at")
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@map("sessions")
+}
+
+model ChatThread {
+  id          String     @id @default(uuid())
+  userId      Int        @map("user_id")
+  title       String
+  category    String     @default("favorites")
+  isArchived  Boolean    @default(false) @map("is_archived")
+  metadata    Json?
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @default(now()) @updatedAt @map("updated_at")
+
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages    Message[]
+  agentRuns   AgentRun[]
+  documents   Document[]
+
+  @@index([userId])
+  @@index([updatedAt])
+  @@map("chat_threads")
+}
+
+model Document {
+  id           String          @id @default(uuid())
+  userId       Int             @map("user_id")
+  threadId     String?         @map("thread_id")
+  filename     String
+  mimeType     String          @map("mime_type")
+  sizeBytes    Int             @map("size_bytes")
+  markdown     String          @db.Text
+  status       String          @default("ready")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  thread       ChatThread?     @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  chunks       DocumentChunk[]
+
+  @@index([userId])
+  @@index([threadId])
+  @@map("documents")
+}
+
+model DocumentChunk {
+  id           String   @id @default(uuid())
+  documentId   String   @map("document_id")
+  ordinal      Int
+  heading      String?
+  content      String   @db.Text
+  createdAt    DateTime @default(now()) @map("created_at")
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, ordinal])
+  @@index([documentId])
+  @@map("document_chunks")
+}
+
+model Message {
+  id          String     @id @default(uuid())
+  threadId    String     @map("thread_id")
+  sender      String     // 'user' | 'ai' | 'system'
+  text        String     @db.Text
+  toolResults Json?      @map("tool_results")
+  metadata    Json?
+  createdAt   DateTime   @default(now()) @map("created_at")
+
+  thread      ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId])
+  @@index([createdAt])
+  @@map("messages")
+}
+
+model AgentRun {
+  id              String     @id @default(uuid())
+  threadId        String     @map("thread_id")
+  userId          Int        @map("user_id")
+  prompt          String     @db.Text
+  response        String?    @db.Text
+  status          String     @default("pending") // 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  model           String?
+  provider        String?
+  executionTimeMs Int?       @map("execution_time_ms")
+  error           String?    @db.Text
+  metadata        Json?
+  startedAt       DateTime   @default(now()) @map("started_at")
+  completedAt     DateTime?  @map("completed_at")
+
+  thread          ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toolCalls       ToolCall[]
+
+  @@index([threadId])
+  @@index([userId])
+  @@index([status])
+  @@map("agent_runs")
+}
+
+model ToolCall {
+  id              String    @id @default(uuid())
+  agentRunId      String    @map("agent_run_id")
+  toolId          String    @map("tool_id")
+  toolName        String    @map("tool_name")
+  status          String    @default("running") // 'running' | 'success' | 'error'
+  input           Json?
+  output          Json?
+  executionTimeMs Int?      @map("execution_time_ms")
+  error           String?   @db.Text
+  startedAt       DateTime  @default(now()) @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+
+  agentRun        AgentRun  @relation(fields: [agentRunId], references: [id], onDelete: Cascade)
+
+  @@index([agentRunId])
+  @@map("tool_calls")
+}
