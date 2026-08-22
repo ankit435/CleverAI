@@ -4,7 +4,7 @@ import warnings
 from typing import Optional, Any, List
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from config import settings
-from agent.async_manager import async_agent_manager, LLM_REQUEST_TIMEOUT
+from agent.async_manager import async_agent_manager, LLM_REQUEST_TIMEOUT, ErrorType
 
 warnings.filterwarnings("ignore", category=UserWarning, module="langchain_nvidia_ai_endpoints")
 
@@ -19,28 +19,15 @@ class LLMCancelledError(Exception):
 def get_chat_model(model_name: Optional[str] = None, temperature: float = 0.7, max_tokens: int = 4096, timeout: float = LLM_REQUEST_TIMEOUT):
     """
     Dynamic Multi-Model Factory Function.
-    Supports ChatNVIDIA (Nemotron, Llama), OpenAI, Anthropic, and Google Gemini models at runtime.
-    Configured with explicit component-specific LLM_REQUEST_TIMEOUT.
+    Reads model dynamically from runtime argument or environment variable (DEFAULT_MODEL).
+    Never hardcodes any model string.
     """
-    target_model = model_name or settings.default_model
+    target_model = (model_name or os.getenv("DEFAULT_MODEL") or settings.default_model or "").strip()
+    if not target_model:
+        raise ValueError("No model specified in request or DEFAULT_MODEL environment variable.")
 
-    # 1. NVIDIA AI Models
-    if target_model.startswith("meta/") or target_model.startswith("nvidia/") or target_model.startswith("mistralai/") or "nvidia" in target_model or "nemotron" in target_model:
-        api_key = settings.nvidia_api_key
-        if not api_key:
-            raise ValueError("NVIDIA_API_KEY is not set in configuration")
-
-        return ChatNVIDIA(
-            model=target_model,
-            api_key=api_key,
-            temperature=temperature,
-            top_p=0.95,
-            max_tokens=max_tokens,
-            timeout=int(timeout)
-        )
-
-    # 2. OpenAI Models (gpt-4o, gpt-4o-mini)
-    if target_model.startswith("gpt-") or "openai" in target_model:
+    # 1. OpenAI Models (e.g. gpt-4o, gpt-4o-mini, o1, o3)
+    if target_model.startswith("gpt-") or "openai" in target_model.lower():
         try:
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(
@@ -52,8 +39,8 @@ def get_chat_model(model_name: Optional[str] = None, temperature: float = 0.7, m
         except ImportError:
             pass
 
-    # 3. Anthropic Claude Models (claude-3-5-sonnet)
-    if target_model.startswith("claude-") or "anthropic" in target_model:
+    # 2. Anthropic Claude Models (e.g. claude-3-5-sonnet, claude-3-haiku)
+    if target_model.startswith("claude-") or "anthropic" in target_model.lower():
         try:
             from langchain_anthropic import ChatAnthropic
             return ChatAnthropic(
@@ -65,8 +52,8 @@ def get_chat_model(model_name: Optional[str] = None, temperature: float = 0.7, m
         except ImportError:
             pass
 
-    # 4. Google Gemini Models (gemini-1.5-pro)
-    if target_model.startswith("gemini-") or "google" in target_model:
+    # 3. Google Gemini Models (e.g. gemini-1.5-pro, gemini-2.0-flash)
+    if (target_model.startswith("gemini-") or "google" in target_model.lower()) and not "/" in target_model:
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
             return ChatGoogleGenerativeAI(
@@ -78,11 +65,16 @@ def get_chat_model(model_name: Optional[str] = None, temperature: float = 0.7, m
         except ImportError:
             pass
 
-    # Default Fallback: ChatNVIDIA with default model
+    # 4. NVIDIA AI NIM Hosted Models (all / any model hosted on NVIDIA NIM)
+    api_key = settings.nvidia_api_key or os.getenv("NVIDIA_API_KEY", "")
+    if not api_key:
+        raise ValueError("NVIDIA_API_KEY is not set in configuration")
+
     return ChatNVIDIA(
-        model=settings.default_model,
-        api_key=settings.nvidia_api_key,
+        model=target_model,
+        api_key=api_key,
         temperature=temperature,
+        top_p=0.95,
         max_tokens=max_tokens,
         timeout=int(timeout)
     )
@@ -120,14 +112,26 @@ def invoke_llm_with_diagnostics(
             elapsed_ms = int((time.time() - attempt_start) * 1000)
             err_str = str(exc).lower()
             is_timeout = "timeout" in err_str or "timed out" in err_str or "abort" in err_str or elapsed_ms >= (configured_timeout_ms - 2000)
-            is_retryable = is_timeout or "429" in err_str or "503" in err_str or "connection" in err_str
+            
+            if is_timeout:
+                error_category = ErrorType.NIM_TIMEOUT
+            elif "429" in err_str or "rate limit" in err_str:
+                error_category = ErrorType.NIM_RATE_LIMIT
+            elif "503" in err_str or "502" in err_str or "500" in err_str or "server error" in err_str:
+                error_category = ErrorType.NIM_SERVER_ERROR
+            elif "connection" in err_str or "connect" in err_str:
+                error_category = ErrorType.NIM_CONNECTION_ERROR
+            else:
+                error_category = ErrorType.UNKNOWN_ERROR
+
+            is_retryable = is_timeout or error_category in (ErrorType.NIM_RATE_LIMIT, ErrorType.NIM_SERVER_ERROR, ErrorType.NIM_CONNECTION_ERROR)
 
             if is_timeout:
                 async_agent_manager.log_timing(run_id, "llm_request_timeout", elapsed_ms, iteration=iteration)
                 async_agent_manager.log_diagnostic(
                     run_id=run_id,
                     component="NVIDIA NIM API",
-                    timeout_type="request_timeout",
+                    timeout_type=error_category.value,
                     configured_timeout_ms=configured_timeout_ms,
                     elapsed_ms=elapsed_ms,
                     operation="chat_completion",
@@ -138,7 +142,7 @@ def invoke_llm_with_diagnostics(
                 async_agent_manager.log_diagnostic(
                     run_id=run_id,
                     component="LLM Client",
-                    timeout_type="execution_error",
+                    timeout_type=error_category.value,
                     configured_timeout_ms=configured_timeout_ms,
                     elapsed_ms=elapsed_ms,
                     operation="chat_completion",

@@ -76,7 +76,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Config state
   const [appConfig, setAppConfig] = useState<AppConfig>(() => {
     const saved = localStorage.getItem('clever_app_config');
-    return saved ? JSON.parse(saved) : DEFAULT_APP_CONFIG;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        return {
+          ...DEFAULT_APP_CONFIG,
+          ...parsed,
+          ai: {
+            ...DEFAULT_APP_CONFIG.ai,
+            ...(parsed.ai || {}),
+            defaultModel: (parsed.ai?.defaultModel || '').trim()
+          }
+        };
+      } catch {}
+    }
+    return DEFAULT_APP_CONFIG;
   });
 
   useEffect(() => {
@@ -564,7 +578,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const data = await apiClient.chat.sendMessage({
         message: text || `Summarize attached document ${attachedFile?.name || ''}`,
         threadId: currentThreadId,
-        model: appConfig.ai.defaultModel,
+        model: appConfig.ai.defaultModel ? appConfig.ai.defaultModel : undefined,
         activePlugins: activePluginIds,
         documentIds
       });

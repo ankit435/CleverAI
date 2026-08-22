@@ -6,6 +6,27 @@ import json
 from typing import Any, Dict, List
 from langchain_core.tools import tool
 
+def decode_search_url(raw_url: str) -> str:
+    """Decodes search engine tracking redirect URLs into direct destination URLs."""
+    if not raw_url:
+        return ""
+    if "bing.com/ck/a?" in raw_url or "bing.com/ck/a!" in raw_url:
+        parsed = urllib.parse.urlparse(raw_url)
+        params = urllib.parse.parse_qs(parsed.query)
+        if "u" in params and params["u"]:
+            u_val = params["u"][0]
+            if u_val.startswith("a1"):
+                import base64
+                try:
+                    b64_str = u_val[2:]
+                    padded = b64_str + '=' * (-len(b64_str) % 4)
+                    decoded = base64.b64decode(padded).decode("utf-8", errors="ignore")
+                    if decoded.startswith("http"):
+                        return decoded
+                except Exception:
+                    pass
+    return raw_url
+
 def _live_browser_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     """Fetch live web search results using browser worker."""
     try:
@@ -31,7 +52,8 @@ def _live_browser_search(query: str, max_results: int = 5) -> List[Dict[str, str
                 href = loc.locator("h2 a").get_attribute("href")
                 snippet = loc.locator(".b_caption p").inner_text() if loc.locator(".b_caption p").count() > 0 else ""
                 if title and href:
-                    results.append({"title": title.strip(), "url": href.strip(), "snippet": snippet.strip()})
+                    clean_url = decode_search_url(href.strip())
+                    results.append({"title": title.strip(), "url": clean_url, "snippet": snippet.strip()})
             return results
 
         return browser_service.worker.run(_task)

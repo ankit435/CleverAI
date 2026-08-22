@@ -28,10 +28,16 @@ SECRET_PATTERNS = [
     r'(?i)(private[_\-]?key\s*[:=]\s*["\']?)[a-z0-9_\-\.\+]{30,}'
 ]
 
+LINK_SHORTENERS = {
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly", "adf.ly", "bit.do"
+}
+
+IPV4_PATTERN = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
+
 class BrowserSecurityManager:
     """Centralized security enforcer for browser operations and prompt grounding."""
 
-    def __init__(self, allow_local_network: bool = True):
+    def __init__(self, allow_local_network: bool = False):
         self.allow_local_network = allow_local_network
 
     @staticmethod
@@ -51,7 +57,7 @@ class BrowserSecurityManager:
         return f"https://{cleaned}"
 
     def validate_url(self, url: str) -> Tuple[bool, Optional[str]]:
-        """Validate destination URL against SSRF, dangerous protocols, and blocked cloud metadata."""
+        """Validate destination URL against SSRF, dangerous protocols, IP-literals, and link-shorteners."""
         cleaned = self.normalize_url(url)
         if not cleaned:
             return False, "URL cannot be empty."
@@ -59,7 +65,7 @@ class BrowserSecurityManager:
         parsed = urllib.parse.urlparse(cleaned)
         scheme = parsed.scheme.lower()
 
-        if scheme not in ("http", "https", "about", "chrome"):
+        if scheme not in ("http", "https", "about"):
             return False, f"Unsupported or dangerous protocol scheme: '{scheme}'"
 
         if scheme in ("http", "https"):
@@ -70,7 +76,17 @@ class BrowserSecurityManager:
             if hostname in BLOCKED_HOSTS:
                 return False, f"Access to cloud metadata address '{hostname}' is strictly forbidden."
 
-            if not self.allow_local_network and (hostname in ("localhost", "127.0.0.1", "0.0.0.0") or hostname.startswith("192.168.") or hostname.startswith("10.")):
+            # Block Link-Shorteners
+            if hostname in LINK_SHORTENERS:
+                return False, f"Navigation to unresolved link-shortener '{hostname}' is blocked for security."
+
+            # Block IP-literal URLs (IPv4 or IPv6)
+            if IPV4_PATTERN.match(hostname) or ":" in hostname:
+                if not self.allow_local_network:
+                    return False, f"Navigation to IP-literal host '{hostname}' is blocked."
+
+            # Block localhost & internal hosts
+            if not self.allow_local_network and (hostname in ("localhost", "127.0.0.1", "0.0.0.0") or hostname.startswith("192.168.") or hostname.startswith("10.") or hostname.endswith(".local") or hostname.endswith(".internal")):
                 return False, f"Local intranet navigation to '{hostname}' is blocked."
 
         return True, None

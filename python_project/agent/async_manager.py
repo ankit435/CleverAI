@@ -10,14 +10,25 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("agent.runner")
 
 # ==========================================
-# TIMEOUT POLICIES (Component-Specific)
+# EXPLICIT COMPONENT TIMEOUT SPECIFICATIONS
 # ==========================================
-HTTP_REQUEST_TIMEOUT = 15.0         # HTTP ingestion and initialization
-LLM_REQUEST_TIMEOUT = 30.0          # Per-single LLM inference invocation
-BROWSER_ACTION_TIMEOUT = 15.0       # Per DOM action (click, type, scroll, hover)
-BROWSER_NAVIGATION_TIMEOUT = 25.0   # Per navigation (page.goto)
-INDIVIDUAL_TOOL_TIMEOUT = 20.0      # Per tool execution
-AGENT_TOTAL_RUN_TIMEOUT = 300.0     # Total multi-step agent budget
+NIM_CONNECT_TIMEOUT = 5.0           # TCP handshake / SSL negotiation to api.nvidia.com
+NIM_READ_TIMEOUT = 30.0             # Max time waiting for response stream / tokens from NIM
+NIM_REQUEST_TIMEOUT = 30.0          # Total per-single LLM inference budget
+
+BROWSER_CONNECT_TIMEOUT = 5.0       # CDP connection to existing/managed browser
+BROWSER_NAVIGATION_TIMEOUT = 25.0   # Page navigation (page.goto)
+BROWSER_ACTION_TIMEOUT = 15.0       # DOM interaction (click, type, hover, scroll)
+
+INDIVIDUAL_TOOL_TIMEOUT = 20.0      # Maximum duration for an individual tool
+AGENT_ITERATION_TIMEOUT = 35.0      # Per-iteration limit (LLM + action)
+AGENT_TOTAL_TIMEOUT = 300.0         # Full multi-step agent run budget
+API_REQUEST_TIMEOUT = 15.0          # Ingestion / dispatch HTTP socket timeout
+
+# Aliases for backward-compatibility
+HTTP_REQUEST_TIMEOUT = API_REQUEST_TIMEOUT
+LLM_REQUEST_TIMEOUT = NIM_REQUEST_TIMEOUT
+AGENT_TOTAL_RUN_TIMEOUT = AGENT_TOTAL_TIMEOUT
 
 class AgentRunState(str, Enum):
     QUEUED = "QUEUED"
@@ -29,6 +40,17 @@ class AgentRunState(str, Enum):
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
     CANCELLED = "CANCELLED"
+
+class ErrorType(str, Enum):
+    NIM_TIMEOUT = "NIM_TIMEOUT"
+    NIM_CONNECTION_ERROR = "NIM_CONNECTION_ERROR"
+    NIM_RATE_LIMIT = "NIM_RATE_LIMIT"
+    NIM_SERVER_ERROR = "NIM_SERVER_ERROR"
+    AGENT_TIMEOUT = "AGENT_TIMEOUT"
+    BROWSER_TIMEOUT = "BROWSER_TIMEOUT"
+    BROWSER_DISCONNECTED = "BROWSER_DISCONNECTED"
+    USER_CANCELLED = "USER_CANCELLED"
+    UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
 class TimingEvent(BaseModel):
     event_name: str

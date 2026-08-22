@@ -13,7 +13,7 @@ const PYTHON_SERVER_URL = process.env.PYTHON_SERVER_URL || 'http://127.0.0.1:800
 const ChatRequestSchema = z.object({
   message: z.string().trim().default(''),
   threadId: z.string().optional(),
-  model: z.string().optional().default(process.env.DEFAULT_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b'),
+  model: z.string().optional(),
   activePlugins: z.array(z.string()).optional().default(['web-search', 'code-interpreter', 'dalle3-image', 'browser-agent']),
   documentIds: z.array(z.string().uuid()).max(10).optional().default([])
 }).refine(value => Boolean(value.message) || value.documentIds.length > 0, {
@@ -70,6 +70,126 @@ chatRouter.delete('/history', async (req: AuthenticatedRequest, res: Response) =
   }
 });
 
+// GET /api/v1/chat/runs/:runId - Query live status of asynchronous agent run
+chatRouter.get('/runs/:runId', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = Number(req.user!.id);
+    const { runId } = req.params;
+
+    const agentRun = await prisma.agentRun.findFirst({
+      where: { id: runId, userId },
+      include: { toolCalls: true }
+    });
+
+    if (!agentRun) {
+      return res.status(404).json({ error: `Agent run '${runId}' not found.` });
+    }
+
+    // Attempt to sync with Python microservice for latest in-flight metrics
+    let pyState: any = null;
+    try {
+      const pyRes = await fetch(`${PYTHON_SERVER_URL}/api/v1/chat/runs/${runId}`, {
+        signal: AbortSignal.timeout(2000)
+      });
+      if (pyRes.ok) {
+        pyState = await pyRes.json();
+      }
+    } catch {}
+
+    return res.json({
+      runId: agentRun.id,
+      threadId: agentRun.threadId,
+      status: pyState?.status || agentRun.status,
+      currentAction: pyState?.current_action || null,
+      iteration: pyState?.iteration || 0,
+      executionTimeMs: agentRun.executionTimeMs || pyState?.execution_time_ms || 0,
+      reply: agentRun.response || pyState?.reply || null,
+      error: agentRun.error || pyState?.error || null,
+      toolCalls: agentRun.toolCalls || [],
+      diagnostics: pyState?.diagnostics || [],
+      startedAt: agentRun.startedAt,
+      completedAt: agentRun.completedAt
+    });
+  } catch (err: any) {
+    console.error('Run Status Error:', err);
+    return res.status(500).json({ error: 'Failed to query agent run status' });
+  }
+});
+
+// GET /api/v1/chat/runs/:runId/events - SSE Stream for real-time progress
+chatRouter.get('/runs/:runId/events', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = Number(req.user!.id);
+    const { runId } = req.params;
+
+    const agentRun = await prisma.agentRun.findFirst({
+      where: { id: runId, userId }
+    });
+
+    if (!agentRun) {
+      return res.status(404).json({ error: `Agent run '${runId}' not found.` });
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    try {
+      const pyRes = await fetch(`${PYTHON_SERVER_URL}/api/v1/chat/runs/${runId}/events`);
+      if (!pyRes.ok || !pyRes.body) {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: 'Unable to connect to agent stream' })}\n\n`);
+        return res.end();
+      }
+
+      // Proxy stream chunks to client
+      const reader = pyRes.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      res.end();
+    } catch (streamErr: any) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: streamErr.message })}\n\n`);
+      res.end();
+    }
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to establish event stream' });
+  }
+});
+
+// POST /api/v1/chat/runs/:runId/cancel - Cancel active agent run
+chatRouter.post('/runs/:runId/cancel', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = Number(req.user!.id);
+    const { runId } = req.params;
+
+    const agentRun = await prisma.agentRun.findFirst({
+      where: { id: runId, userId }
+    });
+
+    if (!agentRun) {
+      return res.status(404).json({ error: `Agent run '${runId}' not found.` });
+    }
+
+    try {
+      await fetch(`${PYTHON_SERVER_URL}/api/v1/chat/runs/${runId}/cancel`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(3000)
+      });
+    } catch {}
+
+    await prisma.agentRun.update({
+      where: { id: runId },
+      data: { status: 'cancelled', error: 'Cancelled by user', completedAt: new Date() }
+    });
+
+    return res.json({ success: true, message: `Run '${runId}' cancelled successfully.` });
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to cancel agent run' });
+  }
+});
+
 // POST /api/v1/chat - Production Multi-Tool Agent Execution & Persistence
 chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
   const startTime = Date.now();
@@ -85,6 +205,8 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
     }
 
     const { message, threadId, model, activePlugins, documentIds } = parseResult.data;
+    const effectiveModel = model && model.trim() ? model.trim() : undefined;
+    const isAsync = Boolean((req.body as any)?.async || req.query.async === 'true');
 
     // 1. Resolve or create user's conversation thread (Strict User Isolation)
     let conversation: { id: string; title: string };
@@ -95,7 +217,6 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
       });
 
       if (!existing) {
-        // If threadId provided does not belong to user, create a new one to prevent cross-user leakage
         conversation = await prisma.chatThread.create({
           data: {
             userId,
@@ -144,7 +265,7 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
         userId,
         prompt: message,
         status: 'running',
-        model,
+        model: effectiveModel || null,
         provider: 'LangChain AI Agent Server',
         metadata: { activePlugins, documentIds }
       }
@@ -164,11 +285,46 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
         content: m.text
       }));
 
-    // 5. Execute Agent / Tools Pipeline
+    // Build clean payload for Python agent microservice (omitting model so Python uses its own .env DEFAULT_MODEL)
+    const pythonPayload: Record<string, any> = {
+      message,
+      threadId: conversation.id,
+      activePlugins,
+      documentContext,
+      history: historyList,
+      userId
+    };
+    if (effectiveModel) {
+      pythonPayload.model = effectiveModel;
+    }
+
+    // If Async execution was requested, spawn in background and return runId immediately
+    if (isAsync) {
+      fetch(`${PYTHON_SERVER_URL}/api/v1/chat/async`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-service-key': process.env.INTERNAL_SERVICE_KEY || 'clever-internal-agent-secret-key-prod-2026'
+        },
+        body: JSON.stringify(pythonPayload)
+      }).catch(err => console.warn('Async trigger note:', err.message));
+
+      return res.status(202).json({
+        success: true,
+        status: 'QUEUED',
+        runId: agentRun.id,
+        threadId: conversation.id,
+        userMessageId: userMsg.id,
+        message: 'Agent execution initiated asynchronously.'
+      });
+    }
+
+    // 5. Synchronous Execution
     let replyText = '';
     let provider = 'LangChain AI Agent Server';
     let toolResults: any[] = [];
     let executionError: string | null = null;
+    let isTimeoutError = false;
     const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || 'clever-internal-agent-secret-key-prod-2026';
 
     try {
@@ -178,14 +334,7 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
           'Content-Type': 'application/json',
           'x-internal-service-key': INTERNAL_SERVICE_KEY
         },
-        body: JSON.stringify({
-          message,
-          model,
-          threadId: conversation.id,
-          activePlugins,
-          documentContext,
-          history: historyList
-        }),
+        body: JSON.stringify(pythonPayload),
         signal: process.env.NODE_ENV === 'test' ? AbortSignal.timeout(800) : AbortSignal.timeout(120000)
       });
 
@@ -203,7 +352,11 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
           });
         }
       } else {
-        throw new Error(`Python agent server responded with status: ${pyResponse.status}`);
+        const errJson = await pyResponse.json().catch(() => ({ detail: `Status ${pyResponse.status}` }));
+        if (pyResponse.status === 504 || pyResponse.status === 408) {
+          isTimeoutError = true;
+        }
+        throw new Error(errJson.detail || `Python agent error: ${pyResponse.status}`);
       }
     } catch (pyErr: any) {
       console.warn('⚠️ Python agent server error:', pyErr.message);
@@ -222,7 +375,9 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
         }
       } else {
         executionError = pyErr.message;
-        replyText = `I encountered an issue communicating with the AI Agent backend (${pyErr.message}). Please verify that the Python microservice is running.`;
+        if (pyErr.name === 'AbortError' || pyErr.message.includes('timeout') || pyErr.message.includes('aborted')) {
+          isTimeoutError = true;
+        }
       }
     }
 
@@ -246,7 +401,42 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
       }
     }
 
-    // 7. Persist AI Response Message to PostgreSQL
+    // 7. Update AgentRun status in PostgreSQL
+    const finalRunStatus = executionError ? (isTimeoutError ? 'timeout' : 'failed') : 'completed';
+    await prisma.agentRun.update({
+      where: { id: agentRun.id },
+      data: {
+        response: replyText || null,
+        status: finalRunStatus,
+        executionTimeMs: executionDuration,
+        error: executionError,
+        completedAt: new Date()
+      }
+    });
+
+    // 8. Handle Failures & Timeouts strictly without masking as HTTP 200
+    if (executionError && process.env.NODE_ENV !== 'test') {
+      if (isTimeoutError) {
+        return res.status(504).json({
+          success: false,
+          status: 'TIMEOUT',
+          message: 'The AI agent timed out while processing the request.',
+          runId: agentRun.id,
+          threadId: conversation.id,
+          error: executionError
+        });
+      }
+      return res.status(500).json({
+        success: false,
+        status: 'FAILED',
+        message: 'The AI agent encountered an error processing your request.',
+        runId: agentRun.id,
+        threadId: conversation.id,
+        error: executionError
+      });
+    }
+
+    // 9. Persist AI Response Message to PostgreSQL on success
     const aiMsg = await prisma.message.create({
       data: {
         threadId: conversation.id,
@@ -256,25 +446,13 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
       }
     });
 
-    // 8. Update AgentRun status to 'completed'
-    await prisma.agentRun.update({
-      where: { id: agentRun.id },
-      data: {
-        response: replyText,
-        status: executionError ? 'failed' : 'completed',
-        executionTimeMs: executionDuration,
-        error: executionError,
-        completedAt: new Date()
-      }
-    });
-
-    // 9. Update Conversation Thread timestamp
     await prisma.chatThread.update({
       where: { id: conversation.id },
       data: { updatedAt: new Date() }
     });
 
     return res.json({
+      success: true,
       reply: replyText,
       threadId: conversation.id,
       userMessageId: userMsg.id,
@@ -287,6 +465,6 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
 
   } catch (err: any) {
     console.error('Chat Execution Error:', err);
-    return res.status(500).json({ error: 'Internal server error processing chat' });
+    return res.status(500).json({ success: false, error: 'Internal server error processing chat' });
   }
 });

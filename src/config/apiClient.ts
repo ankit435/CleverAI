@@ -69,8 +69,17 @@ export const apiClient = {
 
   // Chat Endpoints
   chat: {
-    sendMessage: (payload: { message: string; threadId?: string; model?: string; activePlugins?: string[]; documentIds?: string[] }) =>
-      apiFetch('/chat', { method: 'POST', body: JSON.stringify(payload) }),
+    sendMessage: (payload: { message: string; threadId?: string; model?: string; activePlugins?: string[]; documentIds?: string[] }) => {
+      const cleanPayload: Record<string, any> = {
+        message: payload.message
+      };
+      if (payload.threadId) cleanPayload.threadId = payload.threadId;
+      if (payload.model && payload.model.trim()) cleanPayload.model = payload.model.trim();
+      if (payload.activePlugins) cleanPayload.activePlugins = payload.activePlugins;
+      if (payload.documentIds && payload.documentIds.length > 0) cleanPayload.documentIds = payload.documentIds;
+
+      return apiFetch('/chat', { method: 'POST', body: JSON.stringify(cleanPayload) });
+    },
     
     getHistory: () => apiFetch('/chat/history', { method: 'GET' }),
 

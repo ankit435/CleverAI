@@ -235,8 +235,129 @@ def browser_resolve_confirmation(req: BrowserConfirmRequest):
     )
     return res.model_dump()
 
+from fastapi.responses import StreamingResponse
+from agent.async_manager import async_agent_manager, AgentRunState, AgentRunRecord
+import json
+import asyncio
+
+class AsyncChatStartResponse(BaseModel):
+    run_id: str
+    status: AgentRunState
+    thread_id: str
+    message: str = "Agent execution scheduled"
+
+class RunStatusResponse(BaseModel):
+    run_id: str
+    user_id: int
+    thread_id: str
+    prompt: str
+    status: AgentRunState
+    current_action: Optional[str] = None
+    iteration: int = 0
+    started_at: float
+    completed_at: Optional[float] = None
+    execution_time_ms: int = 0
+    tool_results: List[Dict[str, Any]] = Field(default_factory=list)
+    reply: Optional[str] = None
+    error: Optional[str] = None
+    diagnostics: List[Dict[str, Any]] = Field(default_factory=list)
+
 # ==========================================
-# CHAT AGENT EXECUTION ENDPOINT
+# ASYNCHRONOUS AGENT RUN LIFECYCLE ENDPOINTS
+# ==========================================
+
+@app.post("/api/v1/chat/async", response_model=AsyncChatStartResponse)
+async def chat_async_endpoint(req: ChatRequest):
+    """
+    Initiate a long-running Autonomous Agent run asynchronously.
+    Returns immediately with run_id and status=QUEUED.
+    """
+    user_msg = req.message.strip()
+    if not user_msg:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    thread_id = req.threadId or f"thread_{str(time.time()).replace('.', '')}"
+    target_model = (req.model or os.getenv("DEFAULT_MODEL") or settings.default_model or "").strip()
+    active_plugins = req.activePlugins or []
+    document_context = req.documentContext or []
+    user_id = req.userId or 1
+
+    run_record = async_agent_manager.create_run(
+        user_id=user_id,
+        thread_id=thread_id,
+        prompt=user_msg,
+        model=target_model
+    )
+
+    # Spawn background agent execution
+    def _run_bg():
+        execute_tool_calling_flow(
+            user_prompt=user_msg,
+            active_plugin_ids=active_plugins,
+            model_name=target_model,
+            document_context=document_context,
+            history=req.history,
+            user_id=user_id,
+            run_id=run_record.run_id,
+            thread_id=thread_id
+        )
+
+    asyncio.get_event_loop().run_in_executor(None, _run_bg)
+
+    return AsyncChatStartResponse(
+        run_id=run_record.run_id,
+        status=AgentRunState.QUEUED,
+        thread_id=thread_id,
+        message="Autonomous agent run started successfully."
+    )
+
+@app.get("/api/v1/chat/runs/{run_id}", response_model=RunStatusResponse)
+def get_run_status(run_id: str):
+    """Query live execution status, tool outputs, timing, and response for an agent run."""
+    record = async_agent_manager.get_run(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Agent run '{run_id}' not found.")
+
+    return RunStatusResponse(
+        run_id=record.run_id,
+        user_id=record.user_id,
+        thread_id=record.thread_id,
+        prompt=record.prompt,
+        status=record.status,
+        current_action=record.current_action,
+        iteration=record.iteration,
+        started_at=record.started_at,
+        completed_at=record.completed_at,
+        execution_time_ms=record.execution_time_ms,
+        tool_results=record.tool_results,
+        reply=record.final_response,
+        error=record.error,
+        diagnostics=[d.model_dump() for d in record.diagnostics]
+    )
+
+@app.get("/api/v1/chat/runs/{run_id}/events")
+async def get_run_events_stream(run_id: str):
+    """Server-Sent Events (SSE) stream for live real-time agent execution tracking."""
+    record = async_agent_manager.get_run(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Agent run '{run_id}' not found.")
+
+    async def event_generator():
+        async for event in async_agent_manager.stream_events(run_id):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.post("/api/v1/chat/runs/{run_id}/cancel")
+def cancel_agent_run(run_id: str):
+    """Cancel an active long-running agent run."""
+    success = async_agent_manager.cancel_run(run_id)
+    if not success:
+        raise HTTPException(status_code=400, detail="Run could not be cancelled or has already completed.")
+    return {"success": True, "message": f"Run '{run_id}' cancelled successfully."}
+
+# ==========================================
+# SYNCHRONOUS CHAT ENDPOINT (With Error Codes)
 # ==========================================
 
 @app.post("/api/v1/chat", response_model=ChatResponse)
@@ -247,10 +368,17 @@ async def chat_endpoint(req: ChatRequest):
 
     chain_name = req.chain_name or "default_chat"
     thread_id = req.threadId or "default-session"
-    target_model = req.model or settings.default_model
+    target_model = (req.model or os.getenv("DEFAULT_MODEL") or settings.default_model or "").strip()
     active_plugins = req.activePlugins or []
     document_context = req.documentContext or []
     user_id = req.userId or 1
+
+    run_record = async_agent_manager.create_run(
+        user_id=user_id,
+        thread_id=thread_id,
+        prompt=user_msg,
+        model=target_model
+    )
 
     reply_text, tool_results_data, provider_name = execute_tool_calling_flow(
         user_prompt=user_msg,
@@ -258,8 +386,24 @@ async def chat_endpoint(req: ChatRequest):
         model_name=target_model,
         document_context=document_context,
         history=req.history,
-        user_id=user_id
+        user_id=user_id,
+        run_id=run_record.run_id,
+        thread_id=thread_id
     )
+
+    # Check for actual timeout / cancellation / failure state
+    record = async_agent_manager.get_run(run_record.run_id)
+    if record:
+        if record.status == AgentRunState.TIMEOUT:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Agent execution timed out: {record.error or 'LLM/Browser timeout'}"
+            )
+        elif record.status == AgentRunState.CANCELLED:
+            raise HTTPException(
+                status_code=499,
+                detail="Agent execution was cancelled by client."
+            )
 
     tool_results: Optional[List[ToolResult]] = None
     if tool_results_data:

@@ -10,7 +10,7 @@ class Settings(BaseModel):
     environment: str = os.getenv("NODE_ENV", "production")
     internal_service_key: str = os.getenv("INTERNAL_SERVICE_KEY", "clever-internal-agent-secret-key-prod-2026")
     nvidia_api_key: str = os.getenv("NVIDIA_API_KEY", "")
-    default_model: str = os.getenv("DEFAULT_MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
+    default_model: str = os.getenv("DEFAULT_MODEL", "").strip()
     browser_mode: str = os.getenv("BROWSER_MODE", "existing_cdp")
     browser_cdp_url: str = os.getenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
     langsmith_tracing: bool = os.getenv("LANGSMITH_TRACING", "false").lower() == "true"

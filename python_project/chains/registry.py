@@ -15,7 +15,7 @@ class DynamicChainRegistry:
     def _register_default_prompts(self):
         # 1. Stateful Chat Prompt with Conversation Context
         chat_prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an intelligent, helpful, and friendly AI assistant. Always remember and reference context and details shared previously by the user (such as their name, preferences, or topics discussed).\n\nConversation History:\n{chat_history}\n\nDocument context (may be empty):\n{document_context}\n\nUse document context only when relevant. Do not invent facts."),
+            ("system", "You are Clever AI, an intelligent, helpful, and friendly AI workspace assistant. Always remember and reference context and details shared previously by the user (such as their name, preferences, or topics discussed).\n\nConversation History:\n{chat_history}\n\nDocument context (may be empty):\n{document_context}\n\nUse document context only when relevant. Do not invent facts."),
             ("human", "{user_input}")
         ])
         
