@@ -22,7 +22,9 @@ from browser.tools import (
     ALL_BROWSER_TOOLS, browser_status, browser_list_tabs, browser_get_active_tab,
     browser_select_tab, browser_navigate, browser_snapshot, browser_click,
     browser_type, browser_press_key, browser_scroll, browser_screenshot,
-    browser_go_back, browser_go_forward
+    browser_go_back, browser_go_forward, navigate_browser, extract_text,
+    get_elements, click_element, type_text, press_key, wait_for_selector,
+    extract_hyperlinks, screenshot, finish_task
 )
 from browser.service import browser_service
 
@@ -45,6 +47,16 @@ TOOL_MAP = {
     "browser_screenshot": browser_screenshot,
     "browser_go_back": browser_go_back,
     "browser_go_forward": browser_go_forward,
+    "navigate_browser": navigate_browser,
+    "extract_text": extract_text,
+    "get_elements": get_elements,
+    "click_element": click_element,
+    "type_text": type_text,
+    "press_key": press_key,
+    "wait_for_selector": wait_for_selector,
+    "extract_hyperlinks": extract_hyperlinks,
+    "screenshot": screenshot,
+    "finish_task": finish_task,
     "browse_webpage": browse_webpage,
     "search_and_browse": search_and_browse,
     "code-interpreter": code_interpreter,
@@ -184,9 +196,10 @@ def execute_tool_calling_flow(
     # 2. Resolve active tools
     selected_tools = [web_search, find_and_rank_jobs]
 
-    # Always equip complete browser tool suite
+    # Always equip complete browser tool suite and LangGraph tools
     for b_tool in ALL_BROWSER_TOOLS:
-        selected_tools.append(b_tool)
+        if b_tool not in selected_tools:
+            selected_tools.append(b_tool)
 
     if "code-interpreter" in active_plugin_ids or "code_interpreter" in active_plugin_ids:
         selected_tools.append(code_interpreter)
@@ -295,7 +308,21 @@ def execute_tool_calling_flow(
                         t_args = t_call.get("args", {})
                         t_id = t_call.get("id", f"call-{int(time.time()*1000)}")
 
-                        if t_name == "browser_navigate":
+                        if t_name == "finish_task":
+                            final_result_text = t_args.get("result", "")
+                            if final_result_text:
+                                mapped_id, mapped_name = TOOL_DISPLAY_NAMES.get("finish_task", ("browser-agent", "Task Completion & Synthesis"))
+                                tool_results_list.append({
+                                    "toolId": mapped_id,
+                                    "toolName": mapped_name,
+                                    "status": "success",
+                                    "executionTimeMs": 25,
+                                    "data": {"result": final_result_text[:200]}
+                                })
+                                async_agent_manager.complete_run(run_id, final_result_text, tool_results_list)
+                                return final_result_text, tool_results_list, "LangGraph Autonomous Browser Agent"
+
+                        if t_name in ("browser_navigate", "navigate_browser"):
                             consecutive_navigates += 1
                         else:
                             consecutive_navigates = 0
@@ -304,7 +331,7 @@ def execute_tool_calling_flow(
                         t_output = ""
                         t_data: Dict[str, Any] = {}
 
-                        is_browser_op = t_name.startswith("browser_") or t_name in ("browse_webpage", "search_and_browse")
+                        is_browser_op = t_name.startswith("browser_") or t_name in ("browse_webpage", "search_and_browse", "navigate_browser", "extract_text", "get_elements", "click_element", "type_text", "press_key", "wait_for_selector", "extract_hyperlinks", "screenshot")
                         if is_browser_op:
                             async_agent_manager.set_state(run_id, AgentRunState.WAITING_FOR_BROWSER, f"Navigating/Interacting: {t_name}")
                             async_agent_manager.log_timing(run_id, "browser_action_started", 0, iteration=step + 1, tool=t_name)

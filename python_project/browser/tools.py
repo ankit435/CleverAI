@@ -260,6 +260,157 @@ def browser_recover_page(user_goal: str = "", tab_id: Optional[str] = None) -> s
     res = browser_service.execute_action(user_id=1, action="recover_page", text_input=user_goal, tab_id=_clean_tab_id(tab_id))
     return res.message
 
+@tool
+def navigate_browser(url: str) -> str:
+    """Navigate the browser tab to a specified web URL."""
+    res = browser_service.execute_action(user_id=1, action="navigate", url=url.strip())
+    return res.message
+
+@tool
+def extract_text(selector: Optional[str] = None) -> str:
+    """Extract visible text and structure from the active webpage or from a specific selector."""
+    if selector and selector.strip():
+        def _task():
+            session = browser_service.session_manager.get_session(1)
+            if not session or not session.context:
+                return "Browser not connected."
+            page, err = session.tab_manager.get_page_by_id(session.context, None)
+            if err or not page:
+                return f"Page error: {err}"
+            try:
+                locator = page.locator(selector)
+                if locator.count() == 0:
+                    return f"No elements found matching selector '{selector}'."
+                texts = [locator.nth(i).inner_text().strip() for i in range(min(locator.count(), 10))]
+                return "\n---\n".join(texts)
+            except Exception as e:
+                return f"Extraction error: {str(e)}"
+        try:
+            return browser_service.worker.run(_task)
+        except Exception as ex:
+            return f"Worker error: {str(ex)}"
+    
+    res = browser_service.snapshot(user_id=1)
+    if res.status == "success" and res.snapshot:
+        return res.snapshot.formatted_snapshot
+    return f"Extraction error: {res.message}"
+
+@tool
+def get_elements(selector: Optional[str] = None) -> str:
+    """Inspect interactive DOM elements on the page (links, buttons, inputs, accessibility tags)."""
+    res = browser_service.snapshot(user_id=1)
+    if res.status == "success" and res.snapshot:
+        return res.snapshot.formatted_snapshot
+    return f"Element inspection error: {res.message}"
+
+@tool
+def click_element(
+    selector: Optional[str] = None,
+    text: Optional[str] = None,
+    element_id: Optional[str] = None
+) -> str:
+    """Click an interactive button, link, or element by selector, text, or snapshot ID."""
+    res = browser_service.execute_action(
+        user_id=1,
+        action="click",
+        selector=selector,
+        text_input=text,
+        element_id=element_id
+    )
+    return res.message
+
+@tool
+def type_text(
+    text: str,
+    selector: Optional[str] = None,
+    element_id: Optional[int] = None,
+    press_enter: bool = False
+) -> str:
+    """Type text into an input field, search box, or form field."""
+    res = browser_service.execute_action(
+        user_id=1,
+        action="type",
+        text_input=text,
+        selector=selector,
+        element_id=element_id
+    )
+    if press_enter and res.status == "success":
+        browser_service.execute_action(user_id=1, action="press_key", key="Enter")
+        return f"{res.message} and pressed Enter."
+    return res.message
+
+@tool
+def press_key(key: str = "Enter") -> str:
+    """Press a keyboard key on the active page (e.g. 'Enter', 'Escape', 'Tab', 'ArrowDown')."""
+    res = browser_service.execute_action(user_id=1, action="press_key", key=key)
+    return res.message
+
+@tool
+def wait_for_selector(selector: str, timeout_seconds: float = 5.0) -> str:
+    """Wait for dynamic content, SPAs, or specific elements to appear on the page before acting."""
+    def _task():
+        session = browser_service.session_manager.get_session(1)
+        if not session or not session.context:
+            return "Browser not connected."
+        page, err = session.tab_manager.get_page_by_id(session.context, None)
+        if err or not page:
+            return f"Page error: {err}"
+        try:
+            page.wait_for_selector(selector, timeout=int(timeout_seconds * 1000), state="visible")
+            return f"Element '{selector}' is visible on page."
+        except Exception as e:
+            return f"Timeout waiting for '{selector}': {str(e)}"
+
+    try:
+        return browser_service.worker.run(_task)
+    except Exception as ex:
+        return f"Wait error: {str(ex)}"
+
+@tool
+def extract_hyperlinks() -> str:
+    """Discover and extract all navigable hyperlinks on the active page with their labels."""
+    def _task():
+        session = browser_service.session_manager.get_session(1)
+        if not session or not session.context:
+            return "Browser not connected."
+        page, err = session.tab_manager.get_page_by_id(session.context, None)
+        if err or not page:
+            return f"Page error: {err}"
+        try:
+            links = page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('a[href]'))
+                    .filter(a => a.innerText && a.innerText.trim().length > 2)
+                    .slice(0, 30)
+                    .map(a => ({ text: a.innerText.trim(), href: a.href }));
+            }""")
+            if not links:
+                return "No visible hyperlinks detected on page."
+            return "\n".join(f"- [{l['text']}]({l['href']})" for l in links)
+        except Exception as e:
+            return f"Link extraction error: {str(e)}"
+
+    try:
+        return browser_service.worker.run(_task)
+    except Exception as ex:
+        return f"Worker error: {str(ex)}"
+
+@tool
+def screenshot() -> str:
+    """Capture a visual screenshot of the current page for grounding."""
+    res = browser_service.execute_action(user_id=1, action="screenshot")
+    return res.message
+
+@tool
+def finish_task(result: str) -> str:
+    """
+    TERMINAL TOOL: Call this tool ONLY when you have satisfied the user's goal and collected the final verified data.
+    Pass the complete, user-facing Markdown/JSON response to result.
+    This will terminate the agent loop and return your final result directly to the user.
+    Args:
+        result: The complete, final user-facing Markdown answer with verified tables and direct links.
+    """
+    return f"[TASK_COMPLETED]: {result}"
+
 ALL_BROWSER_TOOLS = [
     browser_status,
     browser_list_tabs,
@@ -278,5 +429,15 @@ ALL_BROWSER_TOOLS = [
     browser_go_forward,
     browser_generic_search,
     browser_recover_page,
-    browser_paginate
+    browser_paginate,
+    navigate_browser,
+    extract_text,
+    get_elements,
+    click_element,
+    type_text,
+    press_key,
+    wait_for_selector,
+    extract_hyperlinks,
+    screenshot,
+    finish_task
 ]
