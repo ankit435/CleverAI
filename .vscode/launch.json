@@ -31,9 +31,11 @@
       "name": "Python: Uvicorn (python_server)",
       "type": "python",
       "request": "launch",
+      "python": "${workspaceFolder}/python_project/venv/bin/python",
       "module": "uvicorn",
       "args": ["python_server.main:app", "--reload" ,"--host", "localhost", "--port", "8001"],
       "justMyCode": true,
+      "envFile": "${workspaceFolder}/python_project/.env",
       "console": "integratedTerminal",
       "env": {
 
@@ -44,6 +46,7 @@
       "name": "Python: Run python_project/app.py",
       "type": "python",
       "request": "launch",
+      "python": "${workspaceFolder}/python_project/venv/bin/python",
       "program": "${workspaceFolder}/python_project/app.py",
       "console": "integratedTerminal",
       "justMyCode": true

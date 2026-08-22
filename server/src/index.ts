@@ -13,6 +13,33 @@ import { prisma } from './config/prisma.js';
 
 dotenv.config();
 
+// ---------- Rate limiter (in-memory, no extra dep needed) ----------
+const _rlStore = new Map<string, { count: number; resetAt: number }>();
+function makeRateLimiter(maxReqs: number, windowMs: number) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const ip = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
+    const key = `${ip}:${req.path}`;
+    const now = Date.now();
+    const rec = _rlStore.get(key);
+    if (!rec || now > rec.resetAt) {
+      _rlStore.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+    if (rec.count >= maxReqs) {
+      res.setHeader('Retry-After', String(Math.ceil((rec.resetAt - now) / 1000)));
+      return res.status(429).json({ error: 'Too many requests — please try again later.' });
+    }
+    rec.count++;
+    return next();
+  };
+}
+// Purge stale rate-limit entries every 5 minutes to prevent memory leak
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of _rlStore) if (now > v.resetAt) _rlStore.delete(k);
+}, 5 * 60 * 1000);
+// ---------- End rate limiter ----------
+
 export const app = express();
 const PORT = process.env.PORT || 8000;
 const PYTHON_SERVER_URL = process.env.PYTHON_SERVER_URL || 'http://localhost:8001';
@@ -29,19 +56,71 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
   res.on('finish', () => {
     const duration = Date.now() - start;
-    console.log(`[${new Date().toISOString()}] [${reqId.slice(0, 8)}] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${duration}ms)`);
+    // Intentionally omit full URL from logs to avoid storing PII path params.
+    const safeMethod = req.method.toUpperCase();
+    const safePath = req.path.replace(/\/[^/]{20,}/g, '/<id>');
+    console.log(`[${new Date().toISOString()}] [${reqId.slice(0, 8)}] ${safeMethod} ${safePath} -> ${res.statusCode} (${duration}ms)`);
   });
   next();
 });
 
-// Middleware
+// Security headers on every response (no helmet dependency needed).
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.removeHeader('X-Powered-By');
+  next();
+});
+
+// CORS: explicit allowlist — never use wildcard with credentials.
+const _allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:3000')
+  .split(',').map(o => o.trim()).filter(Boolean);
 app.use(cors({
-  origin: '*',
+  origin: (origin, callback) => {
+    // Allow server-to-server / same-origin (no Origin header)
+    if (!origin) return callback(null, true);
+
+    if (_allowedOrigins.includes(origin)) return callback(null, true);
+
+    // Accept common localhost variants (127.0.0.1 vs localhost) when the port matches
+    try {
+      const incoming = new URL(origin);
+      const incomingHost = incoming.hostname;
+      const incomingPort = incoming.port || (incoming.protocol === 'https:' ? '443' : '80');
+
+      for (const ao of _allowedOrigins) {
+        try {
+          const u = new URL(ao);
+          const allowedHost = u.hostname;
+          const allowedPort = u.port || (u.protocol === 'https:' ? '443' : '80');
+          if (allowedPort === incomingPort && (allowedHost === incomingHost || (allowedHost === 'localhost' && incomingHost === '127.0.0.1') || (allowedHost === '127.0.0.1' && incomingHost === 'localhost'))) {
+            return callback(null, true);
+          }
+        } catch {
+          // ignore parse errors for env-supplied values
+        }
+      }
+    } catch {
+      // fallthrough to deny
+    }
+
+    return callback(new Error(`CORS: origin '${origin}' not permitted`));
+  },
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID']
 }));
 
-app.use(express.json({ limit: '10mb' }));
+// Body size: 2 MB ceiling (was 10 MB — reduces DoS surface)
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+
+// Global rate limits
+app.use('/api/v1/auth', makeRateLimiter(20, 60_000));   // 20 req/min on auth
+app.use('/api/v1/chat', makeRateLimiter(30, 60_000));   // 30 req/min on chat
 
 // Health Check Endpoint (Liveness)
 app.get('/api/v1/health', (_req: Request, res: Response) => {

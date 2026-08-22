@@ -8,15 +8,52 @@ import { authenticateToken, AuthenticatedRequest, hashToken } from '../middlewar
 
 export const authRouter = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'clever-ai-jwt-secret-key-change-in-prod';
+// JWT secret: fail fast in production rather than use a known-insecure default.
+const JWT_SECRET = process.env.JWT_SECRET || '';
+if (!JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET environment variable must be set in production.');
+  }
+  console.warn('\u26a0\ufe0f  JWT_SECRET not set — using insecure dev fallback. Do NOT use in production.');
+}
+const JWT_SECRET_EFFECTIVE = JWT_SECRET || 'dev-only-insecure-jwt-secret';
+
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+
+// ---------- Brute-force / account lockout ----------
+const _loginAttempts = new Map<string, { count: number; lockedUntil: number }>();
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_MS = 15 * 60 * 1000; // 15 minutes
+function checkLockout(key: string): { locked: boolean; retryAfterSec?: number } {
+  const rec = _loginAttempts.get(key);
+  if (!rec) return { locked: false };
+  if (Date.now() < rec.lockedUntil) {
+    return { locked: true, retryAfterSec: Math.ceil((rec.lockedUntil - Date.now()) / 1000) };
+  }
+  return { locked: false };
+}
+function recordFailedAttempt(key: string): void {
+  const rec = _loginAttempts.get(key) ?? { count: 0, lockedUntil: 0 };
+  rec.count++;
+  if (rec.count >= MAX_LOGIN_ATTEMPTS) rec.lockedUntil = Date.now() + LOCKOUT_MS;
+  _loginAttempts.set(key, rec);
+}
+function clearAttempts(key: string): void { _loginAttempts.delete(key); }
+// ---------- End lockout ----------
 
 // Zod Schemas for Request Validation
 const SignupSchema = z.object({
   name: z.string().trim().min(2, 'Name must be at least 2 characters').max(100),
   email: z.string().trim().email('Invalid email address').max(255),
-  password: z.string().min(6, 'Password must be at least 6 characters').max(100),
+  password: z
+    .string()
+    .min(12, 'Password must be at least 12 characters')
+    .max(100)
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number')
+    .regex(/[^A-Za-z0-9]/, 'Password must contain at least one special character'),
   rememberMe: z.boolean().optional().default(false)
 });
 
@@ -36,18 +73,22 @@ const GoogleAuthSchema = z.object({
 
 // Helper to create persistent PostgreSQL session & signed JWT
 async function createDatabaseSession(userId: number, userEmail: string, userName: string, req: Request, rememberMe: boolean = false) {
-  const expiresInDays = rememberMe ? 30 : 1;
-  const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
+  // Cap session duration: 7 days with rememberMe, 8 hours without.
+  const expiresInDays = rememberMe ? 7 : 0;
+  const expiresInHours = rememberMe ? 0 : 8;
+  const expiresAt = new Date(Date.now() + (expiresInDays * 24 + expiresInHours) * 60 * 60 * 1000);
 
   const token = jwt.sign(
     { id: userId, email: userEmail, name: userName },
-    JWT_SECRET,
-    { expiresIn: `${expiresInDays}d` }
+    JWT_SECRET_EFFECTIVE,
+    { expiresIn: rememberMe ? '7d' : '8h' }
   );
 
   const tokenHash = hashToken(token);
   const userAgent = req.headers['user-agent'] || null;
-  const ipAddress = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || null;
+  // Only log the first segment of the IP (avoid storing full address if IPv6)
+  const rawIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || null;
+  const ipAddress = rawIp ? rawIp.split(',')[0].trim() : null;
 
   const session = await prisma.session.create({
     data: {
@@ -123,6 +164,14 @@ authRouter.post('/signup', async (req: Request, res: Response) => {
 
 // 2. Strict Login Route
 authRouter.post('/login', async (req: Request, res: Response) => {
+  // Lockout check before any DB work
+  const lockoutKey = (req.body?.email || '').toLowerCase().trim();
+  const lockoutState = checkLockout(lockoutKey);
+  if (lockoutState.locked) {
+    return res.status(429).json({
+      error: `Too many failed attempts. Try again in ${lockoutState.retryAfterSec} seconds.`
+    });
+  }
   try {
     const parseResult = LoginSchema.safeParse(req.body);
     if (!parseResult.success) {
@@ -140,6 +189,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
     });
 
     if (!user) {
+      recordFailedAttempt(lockoutKey);
       return res.status(401).json({
         error: 'Invalid email or password'
       });
@@ -159,10 +209,14 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 
     const isMatch = await bcrypt.compare(password, user.passwordHash);
     if (!isMatch) {
+      recordFailedAttempt(lockoutKey);
       return res.status(401).json({
         error: 'Invalid email or password'
       });
     }
+
+    // Successful login — clear the failed-attempt counter
+    clearAttempts(lockoutKey);
 
     // Update last login timestamp
     await prisma.user.update({

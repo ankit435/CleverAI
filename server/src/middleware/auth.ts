@@ -3,7 +3,15 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { prisma } from '../config/prisma.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'clever-ai-jwt-secret-key-change-in-prod';
+// Centralised JWT secret — fail fast in production rather than silently using a weak default.
+const _rawSecret = process.env.JWT_SECRET || '';
+if (!_rawSecret) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET environment variable must be set in production.');
+  }
+  console.warn('\u26a0\ufe0f  JWT_SECRET not set \u2014 using insecure dev fallback. Do NOT use in production.');
+}
+export const JWT_SECRET = _rawSecret || 'dev-only-insecure-jwt-secret';
 
 export function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');

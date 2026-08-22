@@ -15,6 +15,53 @@ import { AuthModal } from './components/AuthModal';
 import { BrowserControlPanelModal } from './components/BrowserControlPanelModal';
 import { HumanConfirmationModal } from './components/HumanConfirmationModal';
 
+// ─── Error Boundary ──────────────────────────────────────────────────────────
+// Catches JS errors anywhere in the component tree so a single failing widget
+// never takes down the entire chat UI.
+interface ErrorBoundaryState { hasError: boolean; error: Error | null }
+class AppErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBoundaryState> {
+  constructor(props: React.PropsWithChildren) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // Log without leaking stack traces to the console in production
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[AppErrorBoundary]', error, info.componentStack);
+    }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          justifyContent: 'center', height: '100vh', gap: '16px',
+          fontFamily: 'system-ui, sans-serif', padding: '24px', textAlign: 'center'
+        }}>
+          <h2 style={{ fontSize: '1.4rem', margin: 0 }}>Something went wrong</h2>
+          <p style={{ color: '#888', maxWidth: '480px' }}>
+            An unexpected error occurred. Your conversations are safely stored.
+          </p>
+          <button
+            onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }}
+            style={{
+              padding: '10px 24px', borderRadius: '8px', border: 'none',
+              background: 'var(--primary, #6366f1)', color: '#fff', cursor: 'pointer', fontSize: '0.95rem'
+            }}
+          >
+            Reload app
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 const AppContent: React.FC = () => {
   const { 
     activeChat, 
@@ -91,9 +138,13 @@ const AppContent: React.FC = () => {
 
 export const App: React.FC = () => {
   return (
-    <ChatProvider>
-      <AppContent />
-    </ChatProvider>
+    <AppErrorBoundary>
+      <ChatProvider>
+        <AppErrorBoundary>
+          <AppContent />
+        </AppErrorBoundary>
+      </ChatProvider>
+    </AppErrorBoundary>
   );
 };
 

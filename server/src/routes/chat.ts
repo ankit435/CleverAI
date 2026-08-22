@@ -11,7 +11,7 @@ chatRouter.use(authenticateToken);
 const PYTHON_SERVER_URL = process.env.PYTHON_SERVER_URL || 'http://127.0.0.1:8001';
 
 const ChatRequestSchema = z.object({
-  message: z.string().trim().default(''),
+  message: z.string().trim().max(4000, 'Message must not exceed 4000 characters').default(''),
   threadId: z.string().optional(),
   model: z.string().optional(),
   activePlugins: z.array(z.string()).optional().default(['web-search', 'code-interpreter', 'dalle3-image', 'browser-agent']),
