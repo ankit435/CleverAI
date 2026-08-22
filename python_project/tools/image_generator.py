@@ -19,7 +19,6 @@ def generate_ai_image(
     image_url = f"https://image.pollinations.ai/prompt/{encoded}?width={width}&height={height}&nologo=true{seed_param}"
 
     duration_ms = int((time.time() - start_time) * 1000)
-
     formatted = f"![{cleaned_prompt}]({image_url})\n\n*Generated image for: \"{cleaned_prompt}\"*"
 
     return {

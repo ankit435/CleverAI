@@ -26,6 +26,8 @@ model User {
   documents         Document[]
   customPlugins     CustomPlugin[]
   pluginPreferences UserPluginPreference[]
+  browserSessions   BrowserSession[]
+  browserActionLogs BrowserActionAudit[]
 
   @@map("users")
 }
@@ -196,3 +198,58 @@ model UserPluginPreference {
   @@map("user_plugin_preferences")
 }
 
+model BrowserSession {
+  id           String    @id @default(uuid())
+  userId       Int       @map("user_id")
+  mode         String    @default("existing_cdp") // existing_cdp, existing_extension, managed_browser, remote_browser
+  cdpUrl       String?   @map("cdp_url")
+  status       String    @default("disconnected") // connected, disconnected, error
+  connectedAt  DateTime? @map("connected_at")
+  lastActiveAt DateTime  @default(now()) @map("last_active_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tabs         BrowserTab[]
+  actions      BrowserActionAudit[]
+
+  @@index([userId])
+  @@map("browser_sessions")
+}
+
+model BrowserTab {
+  id        String   @id @default(uuid())
+  sessionId String   @map("session_id")
+  tabId     String   @map("tab_id")
+  title     String
+  url       String   @db.Text
+  isActive  Boolean  @default(false) @map("is_active")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  session   BrowserSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, tabId])
+  @@index([sessionId])
+  @@map("browser_tabs")
+}
+
+model BrowserActionAudit {
+  id                 String   @id @default(uuid())
+  sessionId          String?  @map("session_id")
+  userId             Int      @map("user_id")
+  action             String
+  selector           String?
+  textInput          String?  @map("text_input")
+  targetUrl          String?  @map("target_url")
+  status             String   // success, error, confirmation_required, rejected
+  riskLevel          String   @default("low") @map("risk_level")
+  durationMs         Int?     @map("duration_ms")
+  error              String?  @db.Text
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  session            BrowserSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  user               User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("browser_action_audits")
+}

@@ -10,10 +10,9 @@ def perform_web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
     """Execute live web search query and return parsed results with titles, snippets, and citations."""
     cleaned_query = re.sub(r'^(search for|search|find|latest|look up|google|give me the link of|give me)\s*', '', query, flags=re.IGNORECASE).strip() or query
     encoded = urllib.parse.quote_plus(cleaned_query)
-    
     results: List[Dict[str, str]] = []
     
-    # 1. Specialized Direct Routing for Job Searches
+    # 1. Direct Routing for Job Searches
     lower_q = cleaned_query.lower()
     if any(w in lower_q for w in ["job", "jobs", "career", "hiring", "naukri", "linkedin", "internship", "vacancy"]):
         job_role = re.sub(r'\b(site:nakuri\.com|site:naukri\.com|naukri|website|jobs?|link|find|search)\b', '', cleaned_query, flags=re.IGNORECASE).strip() or "software"

@@ -109,7 +109,7 @@ export async function initDb() {
       icon VARCHAR(50) DEFAULT '⚡',
       category VARCHAR(50) DEFAULT 'custom',
       endpoint_url TEXT NOT NULL,
-      method VARCHAR(20) DEFAULT 'POST',
+      method VARCHAR(10) DEFAULT 'POST',
       params JSONB,
       is_enabled BOOLEAN DEFAULT TRUE,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
@@ -126,6 +126,43 @@ export async function initDb() {
       UNIQUE(user_id, plugin_id)
     );
 
+    CREATE TABLE IF NOT EXISTS browser_sessions (
+      id VARCHAR(255) PRIMARY KEY,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      mode VARCHAR(50) DEFAULT 'existing_cdp',
+      cdp_url TEXT,
+      status VARCHAR(50) DEFAULT 'disconnected',
+      connected_at TIMESTAMP WITH TIME ZONE,
+      last_active_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS browser_tabs (
+      id VARCHAR(255) PRIMARY KEY,
+      session_id VARCHAR(255) NOT NULL REFERENCES browser_sessions(id) ON DELETE CASCADE,
+      tab_id VARCHAR(50) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      url TEXT NOT NULL,
+      is_active BOOLEAN DEFAULT FALSE,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(session_id, tab_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS browser_action_audits (
+      id VARCHAR(255) PRIMARY KEY,
+      session_id VARCHAR(255) REFERENCES browser_sessions(id) ON DELETE SET NULL,
+      user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      action VARCHAR(100) NOT NULL,
+      selector TEXT,
+      text_input TEXT,
+      target_url TEXT,
+      status VARCHAR(50) NOT NULL,
+      risk_level VARCHAR(50) DEFAULT 'low',
+      duration_ms INT,
+      error TEXT,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
     CREATE INDEX IF NOT EXISTS idx_chat_threads_user_id ON chat_threads(user_id);
@@ -136,13 +173,13 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents(user_id);
     CREATE INDEX IF NOT EXISTS idx_documents_thread_id ON documents(thread_id);
     CREATE INDEX IF NOT EXISTS idx_document_chunks_document_id ON document_chunks(document_id);
-    CREATE INDEX IF NOT EXISTS idx_custom_plugins_user_id ON custom_plugins(user_id);
-    CREATE INDEX IF NOT EXISTS idx_user_plugin_preferences_user_id ON user_plugin_preferences(user_id);
+    CREATE INDEX IF NOT EXISTS idx_browser_sessions_user_id ON browser_sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_browser_action_audits_user_id ON browser_action_audits(user_id);
   `;
 
   try {
     await pool.query(createTablesQuery);
-    console.log('✅ PostgreSQL Schema initialized (users, sessions, chat_threads, messages, agent_runs, tool_calls, documents, custom_plugins, user_plugin_preferences).');
+    console.log('✅ PostgreSQL Schema initialized (users, sessions, chat_threads, messages, agent_runs, tool_calls, documents, custom_plugins, user_plugin_preferences, browser_sessions, browser_tabs, browser_action_audits).');
   } catch (err: any) {
     console.warn('PostgreSQL table creation note:', err.message);
   }

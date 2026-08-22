@@ -34,10 +34,7 @@ documentsRouter.post('/upload', raw({ type: 'application/octet-stream', limit: M
 
   try {
     const form = new FormData();
-    const blob = new Blob([new Uint8Array(file)], { type: mimeType });
-    form.append('file', blob, filename);
-
-    const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || 'clever-internal-agent-secret-key-prod-2026';
+    form.append('file', new Blob([new Uint8Array(file)], { type: mimeType }), filename);
     const conversion = await fetch(`${PYTHON_SERVER_URL}/api/v1/documents/convert`, {
       method: 'POST',
       body: form,

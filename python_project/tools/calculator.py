@@ -25,16 +25,12 @@ def evaluate_math_expression(expression: str) -> Dict[str, Any]:
     """Safely parse and calculate math expressions."""
     cleaned = expression.strip()
     
-    # Handle percentage syntax like "15% of 250" -> "0.15 * 250"
     percent_match = re.match(r'([\d.]+)\s*%\s*(?:of)?\s*([\d.]+)', cleaned, re.IGNORECASE)
     if percent_match:
         p, val = percent_match.groups()
         cleaned = f"({p} / 100) * {val}"
 
-    # Replace ^ with **
     cleaned = cleaned.replace('^', '**')
-    
-    # Validate allowable characters for safe math evaluation
     if not re.match(r'^[0-9a-zA-Z_\s\+\-\*\/\%\(\)\.\,]+$', cleaned):
         return {
             "expression": expression,
@@ -44,7 +40,6 @@ def evaluate_math_expression(expression: str) -> Dict[str, Any]:
         }
 
     try:
-        # Safe restricted eval with only math symbols
         result = eval(cleaned, {"__builtins__": {}}, SAFE_MATH_NAMES)
         formatted = f"**Calculation:** `{expression}`\n\n**Result:** `{result}`"
         return {
@@ -66,7 +61,7 @@ def calculate(expression: str) -> str:
     """
     Perform mathematical calculations, arithmetic, percentages, powers, square roots, and trigonometric calculations.
     Args:
-        expression: Mathematical expression string to calculate (e.g. 'sqrt(144) + 2**8', '18% of 4500').
+        expression: Mathematical expression string to calculate.
     """
     data = evaluate_math_expression(expression)
     return data["formatted"]

@@ -14,7 +14,6 @@ def execute_sandboxed_python(code: str) -> Dict[str, Any]:
     """Execute Python code in a separate subprocess sandbox and capture output."""
     start_time = time.time()
     
-    # Strip potential markdown formatting if provided
     cleaned_code = code.strip()
     if cleaned_code.startswith("```python"):
         cleaned_code = cleaned_code[9:]
@@ -30,7 +29,6 @@ def execute_sandboxed_python(code: str) -> Dict[str, Any]:
             temporary_file = Path(temp.name)
             temp.write(cleaned_code)
 
-        # Run under current python interpreter in isolated subprocess
         proc = subprocess.run(
             [sys.executable, str(temporary_file)],
             capture_output=True,
@@ -59,7 +57,6 @@ def execute_sandboxed_python(code: str) -> Dict[str, Any]:
             temporary_file.unlink(missing_ok=True)
 
     execution_duration_ms = int((time.time() - start_time) * 1000)
-
     formatted = f"```python\n{cleaned_code}\n```\n\n**Output:**\n```\n{output}\n```"
 
     return {

@@ -6,7 +6,7 @@ import { chatRouter } from './routes/chat.js';
 import { authRouter } from './routes/auth.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { documentsRouter } from './routes/documents.js';
-import { pluginsRouter } from './routes/plugins.js';
+import { browserRouter } from './routes/browser.js';
 import { initDb } from './config/initDb.js';
 import { prisma } from './config/prisma.js';
 
@@ -93,6 +93,9 @@ app.use('/api/v1/plugins', pluginsRouter);
 
 // Chat & Multi-Tool Agent Execution Route
 app.use('/api/v1/chat', chatRouter);
+
+// Browser AI Agent Control & Session Route
+app.use('/api/v1/browser', browserRouter);
 
 // 404 Route Handler
 app.use((_req: Request, res: Response) => {

@@ -1,21 +1,24 @@
-import os
+"""FastAPI Microservice with Dynamic Tool Calling, RAG, and Browser AI Agent Platform."""
 import time
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.security.api_key import APIKeyHeader
+from pydantic import BaseModel, Field
 
 from config import settings
-from chains.registry import chain_registry
 from memory.manager import memory_manager
 from documents import convert_upload
+from tools.executor import execute_tool_calling_flow
+from browser.service import browser_service
+from browser.schema import BrowserMode, BrowserStatus, TabInfo, PageSnapshot, ActionResult
 
 INTERNAL_SERVICE_KEY = os.environ.get("INTERNAL_SERVICE_KEY", "clever-internal-agent-secret-key-prod-2026")
 
 app = FastAPI(
-    title="Clever AI Dynamic Multi-Model LangChain Server",
-    description="Stateful Python FastAPI AI agent server with dynamic model selection (NVIDIA, OpenAI, Claude, Gemini), tool calling, and conversation thread memory",
-    version="3.1.0"
+    title=settings.app_name,
+    version=settings.app_version,
+    description="Production-grade LangChain Microservice with Browser AI Agent, Tool Calling, and RAG",
 )
 
 app.add_middleware(
@@ -26,38 +29,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.middleware("http")
-async def enforce_internal_service_authentication(request: Request, call_next):
-    # Public endpoints: health probe & OpenAPI docs
-    if request.url.path in ["/health", "/docs", "/openapi.json", "/redoc"]:
-        return await call_next(request)
-    
-    # Verify internal service key on all API routes
-    auth_header = request.headers.get("x-internal-service-key") or request.headers.get("authorization", "").replace("Bearer ", "")
-    if auth_header != INTERNAL_SERVICE_KEY:
-        from fastapi.responses import JSONResponse
-        return JSONResponse(
-            status_code=401,
-            content={"error": "Unauthorized: Access forbidden without valid internal service credentials."}
-        )
-    
-    return await call_next(request)
+api_key_header = APIKeyHeader(name="x-internal-service-key", auto_error=False)
 
-class ChatRequest(BaseModel):
-    message: str
-    chain_name: Optional[str] = "default_chat"
-    model: Optional[str] = None
-    threadId: Optional[str] = "default-session"
-    activePlugins: Optional[List[str]] = ["web-search", "code-interpreter", "dalle3-image"]
-    documentContext: Optional[List[Dict[str, Any]]] = []
-    history: Optional[List[Dict[str, str]]] = []
+def verify_internal_key(header_val: str = Security(api_key_header)):
+    if header_val != settings.internal_service_key:
+        raise HTTPException(status_code=403, detail="Forbidden: Invalid internal service authentication key")
+    return header_val
 
 class ToolResult(BaseModel):
     toolId: str
     toolName: str
     status: str
-    executionTimeMs: int
-    data: Dict[str, Any]
+    executionTimeMs: Optional[int] = None
+    data: Optional[Dict[str, Any]] = None
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., description="User query or prompt message")
+    chain_name: Optional[str] = Field("default_chat", description="Chain name to execute")
+    model: Optional[str] = Field(None, description="Model identifier override")
+    threadId: Optional[str] = Field(None, description="Conversation thread identifier for memory")
+    activePlugins: Optional[List[str]] = Field(default_factory=list, description="Active plugin IDs enabled by user")
+    documentContext: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Extracted document chunks for grounding")
+    history: Optional[List[Dict[str, str]]] = Field(default_factory=list, description="Conversation history from PostgreSQL")
+    userId: Optional[int] = Field(default=1, description="Authenticated user ID for multi-user isolation")
 
 class ChatResponse(BaseModel):
     reply: str
@@ -66,27 +60,71 @@ class ChatResponse(BaseModel):
     thread_id: str
     memory_turns: int
     toolResults: Optional[List[ToolResult]] = None
-    provider: str = "Dynamic Multi-Model LangChain PyServer"
+    provider: Optional[str] = "LangChain AI Agent"
     timestamp: str
+
+# Browser Request / Response Schemas
+class BrowserConnectRequest(BaseModel):
+    mode: Optional[BrowserMode] = Field(default=BrowserMode.EXISTING_CDP)
+    cdp_url: Optional[str] = Field(default="http://127.0.0.1:9222")
+    user_data_dir: Optional[str] = None
+    userId: Optional[int] = Field(default=1)
+
+class BrowserTabSelectRequest(BaseModel):
+    tab_id: str
+    userId: Optional[int] = Field(default=1)
+
+class BrowserTabOpenRequest(BaseModel):
+    url: str = Field(default="about:blank")
+    userId: Optional[int] = Field(default=1)
+
+class BrowserTabCloseRequest(BaseModel):
+    tab_id: str
+    userId: Optional[int] = Field(default=1)
+
+class BrowserSnapshotRequest(BaseModel):
+    tab_id: Optional[str] = None
+    userId: Optional[int] = Field(default=1)
+
+class BrowserActionRequest(BaseModel):
+    action: str = Field(..., description="Action name: click, type, navigate, scroll, press_key, screenshot, go_back, go_forward")
+    selector: Optional[str] = None
+    text_input: Optional[str] = None
+    url: Optional[str] = None
+    element_id: Optional[int] = None
+    key: Optional[str] = None
+    direction: Optional[str] = "down"
+    pixels: Optional[int] = 500
+    tab_id: Optional[str] = None
+    confirmed: Optional[bool] = False
+    userId: Optional[int] = Field(default=1)
+
+class BrowserConfirmRequest(BaseModel):
+    confirmation_id: str
+    approved: bool
+    userId: Optional[int] = Field(default=1)
 
 @app.get("/health")
 def health_check():
     return {
-        "status": "online",
-        "service": "Dynamic Multi-Model LangChain PyServer",
-        "nvidia_key_active": bool(settings.nvidia_api_key),
-        "langsmith_tracing": settings.langsmith_tracing,
+        "status": "healthy",
+        "service": settings.app_name,
+        "version": settings.app_version,
+        "environment": settings.environment,
         "default_model": settings.default_model
     }
 
-@app.get("/api/v1/memory/{thread_id}")
-def get_thread_memory(thread_id: str):
-    """Inspect stateful message memory for a specific conversation thread."""
-    history = memory_manager.get_history(thread_id)
+@app.get("/api/v1/models")
+def list_available_models():
     return {
-        "thread_id": thread_id,
-        "message_count": len(history),
-        "context": memory_manager.get_formatted_context(thread_id)
+        "models": [
+            {"id": "nvidia/nemotron-3.5-lightning-30b-a3b", "name": "NVIDIA Nemotron 3.5 Lightning 30B", "provider": "NVIDIA NIM", "badge": "Primary"},
+            {"id": "meta/llama-3.1-70b-instruct", "name": "Meta Llama 3.1 70B Instruct", "provider": "NVIDIA NIM", "badge": "Fast"},
+            {"id": "gpt-4o", "name": "OpenAI GPT-4o", "provider": "OpenAI", "badge": "Pro"},
+            {"id": "claude-3-5-sonnet", "name": "Anthropic Claude 3.5 Sonnet", "provider": "Anthropic", "badge": "Pro"},
+            {"id": "gemini-1.5-pro", "name": "Google Gemini 1.5 Pro", "provider": "Google", "badge": "Pro"},
+            {"id": "local-ollama", "name": "Local Ollama Llama 3", "provider": "Local Host", "badge": "Offline"}
+        ]
     }
 
 @app.post('/api/v1/documents/convert')
@@ -95,11 +133,110 @@ async def convert_document(
     upload: Optional[UploadFile] = File(None),
     document: Optional[UploadFile] = File(None)
 ):
-    """Convert an uploaded, server-controlled local file to retrieval-ready Markdown."""
     target = file or upload or document
     if not target:
         raise HTTPException(status_code=400, detail="Missing upload file in request body.")
     return await convert_upload(target)
+
+# ==========================================
+# BROWSER AGENT REST API ROUTES
+# ==========================================
+
+@app.post("/api/v1/browser/connect")
+def browser_connect(req: BrowserConnectRequest):
+    """Connect to user's existing Chrome/Edge browser via CDP or managed session."""
+    user_id = req.userId or 1
+    success, message, status = browser_service.connect(
+        user_id=user_id, mode=req.mode or BrowserMode.EXISTING_CDP, cdp_url=req.cdp_url or "http://127.0.0.1:9222"
+    )
+    return {
+        "success": success,
+        "message": message,
+        "status": status.model_dump()
+    }
+
+@app.post("/api/v1/browser/disconnect")
+def browser_disconnect(req: Optional[BrowserConnectRequest] = None):
+    """Disconnect from browser without closing user's running browser process."""
+    user_id = req.userId if req else 1
+    success, message = browser_service.disconnect(user_id=user_id)
+    return {"success": success, "message": message}
+
+@app.get("/api/v1/browser/status")
+def browser_get_status(userId: Optional[int] = 1):
+    """Get connectivity, browser type, and open tabs count."""
+    status = browser_service.get_status(user_id=userId or 1)
+    return status.model_dump()
+
+@app.get("/api/v1/browser/tabs")
+def browser_list_tabs(userId: Optional[int] = 1):
+    """List open tabs with titles, URLs, and active status."""
+    tabs = browser_service.list_tabs(user_id=userId or 1)
+    return {"tabs": [t.model_dump() for t in tabs]}
+
+@app.post("/api/v1/browser/tabs/select")
+def browser_select_tab(req: BrowserTabSelectRequest):
+    """Switch active focused tab in browser."""
+    success, message, tab = browser_service.select_tab(user_id=req.userId or 1, tab_id=req.tab_id)
+    return {
+        "success": success,
+        "message": message,
+        "tab": tab.model_dump() if tab else None
+    }
+
+@app.post("/api/v1/browser/tabs/open")
+def browser_open_tab(req: BrowserTabOpenRequest):
+    """Open new tab and navigate to URL."""
+    success, message, tab = browser_service.open_new_tab(user_id=req.userId or 1, url=req.url)
+    return {
+        "success": success,
+        "message": message,
+        "tab": tab.model_dump() if tab else None
+    }
+
+@app.post("/api/v1/browser/tabs/close")
+def browser_close_tab(req: BrowserTabCloseRequest):
+    """Close tab by ID."""
+    success, message = browser_service.close_tab(user_id=req.userId or 1, tab_id=req.tab_id)
+    return {"success": success, "message": message}
+
+@app.post("/api/v1/browser/snapshot")
+def browser_snapshot(req: BrowserSnapshotRequest):
+    """Capture structured accessibility snapshot of active or target tab."""
+    res = browser_service.snapshot(user_id=req.userId or 1, tab_id=req.tab_id)
+    return res.model_dump()
+
+@app.post("/api/v1/browser/action")
+def browser_execute_action(req: BrowserActionRequest):
+    """Execute semantic browser action with Human Confirmation Security Gate."""
+    res = browser_service.execute_action(
+        user_id=req.userId or 1,
+        action=req.action,
+        selector=req.selector,
+        text_input=req.text_input,
+        url=req.url,
+        element_id=req.element_id,
+        key=req.key,
+        direction=req.direction or "down",
+        pixels=req.pixels or 500,
+        tab_id=req.tab_id,
+        confirmed=req.confirmed or False
+    )
+    return res.model_dump()
+
+@app.post("/api/v1/browser/confirm")
+def browser_resolve_confirmation(req: BrowserConfirmRequest):
+    """Approve or reject a pending dangerous action."""
+    res = browser_service.resolve_confirmation(
+        user_id=req.userId or 1,
+        confirmation_id=req.confirmation_id,
+        approved=req.approved
+    )
+    return res.model_dump()
+
+# ==========================================
+# CHAT AGENT EXECUTION ENDPOINT
+# ==========================================
 
 @app.post("/api/v1/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest):
@@ -112,104 +249,44 @@ async def chat_endpoint(req: ChatRequest):
     target_model = req.model or settings.default_model
     active_plugins = req.activePlugins or []
     document_context = req.documentContext or []
+    user_id = req.userId or 1
 
-    tool_results: List[ToolResult] = []
-    lower_msg = user_msg.lower()
+    reply_text, tool_results_data, provider_name = execute_tool_calling_flow(
+        user_prompt=user_msg,
+        active_plugin_ids=active_plugins,
+        model_name=target_model,
+        document_context=document_context,
+        history=req.history,
+        user_id=user_id
+    )
 
-    from urllib.parse import quote_plus
-    import re
+    tool_results: Optional[List[ToolResult]] = None
+    if tool_results_data:
+        tool_results = [
+            ToolResult(
+                toolId=t.get("toolId", "tool"),
+                toolName=t.get("toolName", "Tool"),
+                status=t.get("status", "success"),
+                executionTimeMs=t.get("executionTimeMs", 50),
+                data=t.get("data")
+            )
+            for t in tool_results_data
+        ]
 
-    # Tool Execution Pipelines
-    if "dalle3-image" in active_plugins and any(kw in lower_msg for kw in ["image", "draw", "render", "create image", "visual"]):
-        encoded_prompt = quote_plus(user_msg[:120])
-        tool_results.append(ToolResult(
-            toolId="dalle3-image",
-            toolName="DALL-E 3 Visual Studio",
-            status="success",
-            executionTimeMs=980,
-            data={
-                "type": "image",
-                "imageUrl": f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true",
-                "imagePrompt": user_msg
-            }
-        ))
-
-    if "code-interpreter" in active_plugins and any(kw in lower_msg for kw in ["code", "python", "script", "function", "react", "calculate", "math", "add", "subtract"]):
-        numbers = [float(n) for n in re.findall(r"[-+]?\d*\.?\d+", user_msg) if n]
-        if numbers:
-            num_sum = sum(numbers)
-            code_snippet = f"# Executed in Sandbox Environment\nvalues = {numbers}\nresult = sum(values)\nprint(f'Computed sum: {{result}}')"
-            code_output = f"Computed sum: {num_sum}\n[Process completed successfully]"
-        else:
-            safe_expr = re.sub(r'[^a-zA-Z0-9_\s]', '', user_msg)[:40]
-            code_snippet = f"# Python 3.11 Runtime Execution\ndef process_query():\n    return '{safe_expr}'\n\nprint(process_query())"
-            code_output = f"{safe_expr}\n[Process completed with exit code 0]"
-
-        tool_results.append(ToolResult(
-            toolId="code-interpreter",
-            toolName="Code Sandbox Interpreter",
-            status="success",
-            executionTimeMs=175,
-            data={
-                "type": "code",
-                "codeSnippet": code_snippet,
-                "codeOutput": code_output
-            }
-        ))
-
-    if "web-search" in active_plugins and any(kw in lower_msg for kw in ["search", "latest", "what is", "news", "trend", "documentation", "who is", "how to"]):
-        cleaned_query = re.sub(r'(search for|search|latest|what is|find|look up)\s*', '', user_msg, flags=re.IGNORECASE).strip()
-        if not cleaned_query:
-            cleaned_query = user_msg
-
-        tool_results.append(ToolResult(
-            toolId="web-search",
-            toolName="Web Search Engine",
-            status="success",
-            executionTimeMs=310,
-            data={
-                "type": "search",
-                "searchResults": [
-                    {
-                        "title": f"Top Results: {cleaned_query.capitalize()}",
-                        "snippet": f"Dynamic indexed insights and references for '{cleaned_query}'. Verified latest documentation.",
-                        "url": f"https://www.google.com/search?q={quote_plus(cleaned_query)}"
-                    },
-                    {
-                        "title": "Documentation & References",
-                        "snippet": f"Official reference manual and technical specifications for {cleaned_query}.",
-                        "url": f"https://en.wikipedia.org/wiki/{quote_plus(cleaned_query)}"
-                    }
-                ]
-            }
-        ))
-
-    try:
-        reply = chain_registry.execute_dynamic_chain(
-            user_input=user_msg,
-            thread_id=thread_id,
-            chain_name=chain_name,
-            model_name=target_model,
-            document_context=document_context,
-            history=req.history
-        )
-    except Exception as err:
-        print(f"⚠️ Dynamic execution note: {err}")
-        if tool_results:
-            reply = f"Executed active agent tools successfully with model `{target_model}`."
-        else:
-            reply = f"⚡ [LangChain AI Server ({target_model})] Received response for: '{user_msg}'"
+    if thread_id:
+        memory_manager.add_user_message(thread_id, user_msg)
+        memory_manager.add_ai_message(thread_id, reply_text)
 
     history_count = len(memory_manager.get_history(thread_id))
 
     return ChatResponse(
-        reply=str(reply),
+        reply=str(reply_text),
         chain_used=chain_name,
         model_used=target_model,
         thread_id=thread_id,
         memory_turns=history_count,
-        toolResults=tool_results if tool_results else None,
-        provider="Dynamic Multi-Model LangChain PyServer",
+        toolResults=tool_results,
+        provider=provider_name,
         timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     )
 
