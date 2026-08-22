@@ -7,7 +7,7 @@ from browser.schema import ActionResult, PageSnapshot
 from browser.snapshot import snapshot_parser, JS_ACCESSIBILITY_EXTRACTOR
 from browser.security_manager import security_manager
 
-DEFAULT_TIMEOUT_MS = 15000
+DEFAULT_TIMEOUT_MS = 60000
 
 class PageController:
     """Controls individual page navigation and semantic DOM actions."""
@@ -44,7 +44,8 @@ class PageController:
     def navigate(page: Page, url: str) -> ActionResult:
         """Navigate target page to specified URL."""
         start = time.time()
-        is_valid, err = security_manager.validate_url(url)
+        normalized_url = security_manager.normalize_url(url)
+        is_valid, err = security_manager.validate_url(normalized_url)
         if not is_valid:
             return ActionResult(
                 action="navigate",
@@ -55,7 +56,7 @@ class PageController:
             )
 
         try:
-            page.goto(url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
+            page.goto(normalized_url, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
             duration_ms = int((time.time() - start) * 1000)
             return ActionResult(
                 action="navigate",

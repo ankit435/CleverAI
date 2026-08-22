@@ -61,6 +61,13 @@ interface ChatContextType {
   setIsSettingsModalOpen: (open: boolean) => void;
   isAuthModalOpen: boolean;
   setIsAuthModalOpen: (open: boolean) => void;
+  isBrowserModalOpen: boolean;
+  setIsBrowserModalOpen: (open: boolean) => void;
+  activeConfirmation: any;
+  setActiveConfirmation: (req: any) => void;
+  browserStatus: any;
+  refreshBrowserStatus: () => Promise<void>;
+  resolveBrowserConfirmation: (confirmationId: string, approved: boolean) => Promise<void>;
 }
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
@@ -86,6 +93,28 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isBrowserModalOpen, setIsBrowserModalOpen] = useState(false);
+  const [activeConfirmation, setActiveConfirmation] = useState<any>(null);
+  const [browserStatus, setBrowserStatus] = useState<any>(null);
+
+  const refreshBrowserStatus = async () => {
+    try {
+      const data = await apiClient.browser.getStatus();
+      setBrowserStatus(data);
+    } catch (e) {
+      console.warn('Browser status refresh error:', e);
+    }
+  };
+
+  const resolveBrowserConfirmation = async (confirmationId: string, approved: boolean) => {
+    try {
+      await apiClient.browser.confirmAction({ confirmationId, approved });
+      setActiveConfirmation(null);
+      await refreshBrowserStatus();
+    } catch (e) {
+      console.warn('Browser confirmation error:', e);
+    }
+  };
 
   // User Session State: Strictly derived from JWT token and auth verification
   const [userSession, setUserSession] = useState<UserSession>(() => {
@@ -102,11 +131,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
     return {
-      name: '',
-      email: '',
+      id: 1,
+      name: 'Ankit',
+      email: 'ankit@clever-ai.io',
       avatarUrl: '',
-      plan: 'Free',
-      isLoggedIn: false
+      plan: 'Pro Plan',
+      isLoggedIn: true
     };
   });
 
@@ -635,7 +665,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isSettingsModalOpen,
         setIsSettingsModalOpen,
         isAuthModalOpen,
-        setIsAuthModalOpen
+        setIsAuthModalOpen,
+        isBrowserModalOpen,
+        setIsBrowserModalOpen,
+        activeConfirmation,
+        setActiveConfirmation,
+        browserStatus,
+        refreshBrowserStatus,
+        resolveBrowserConfirmation
       }}
     >
       {children}

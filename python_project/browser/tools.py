@@ -8,6 +8,10 @@ def browser_status() -> str:
     """Check browser connectivity, active tab, and open tabs count."""
     status = browser_service.get_status(user_id=1)
     if not status.connected:
+        browser_service.connect(user_id=1)
+        status = browser_service.get_status(user_id=1)
+
+    if not status.connected:
         return (
             "Browser Status: Disconnected\n"
             "Mode: Existing CDP (http://127.0.0.1:9222)\n"
@@ -38,6 +42,11 @@ def browser_get_active_tab() -> str:
         return "No active tab found. Use 'browser_list_tabs' or 'browser_select_tab'."
     return f"Active Tab: [{tab.id}] {tab.title}\nURL: {tab.url}"
 
+def _clean_tab_id(tab_id: Optional[str]) -> Optional[str]:
+    if isinstance(tab_id, str) and tab_id.lower().strip() in ("none", "null", "undefined", "", "0"):
+        return None
+    return tab_id
+
 @tool
 def browser_select_tab(tab_id: str) -> str:
     """
@@ -45,7 +54,8 @@ def browser_select_tab(tab_id: str) -> str:
     Args:
         tab_id: Tab identifier (e.g. 'tab_1', 'tab_2').
     """
-    success, msg, tab = browser_service.select_tab(user_id=1, tab_id=tab_id)
+    cleaned = _clean_tab_id(tab_id) or "tab_1"
+    success, msg, tab = browser_service.select_tab(user_id=1, tab_id=cleaned)
     if success and tab:
         return f"Switched to [{tab.id}] {tab.title} ({tab.url})"
     return f"Failed to switch tab: {msg}"
@@ -58,7 +68,8 @@ def browser_navigate(url: str, tab_id: Optional[str] = None) -> str:
         url: The web URL to navigate to (e.g. 'https://github.com', 'https://news.ycombinator.com').
         tab_id: Optional tab ID to navigate. Defaults to active tab.
     """
-    res = browser_service.execute_action(user_id=1, action="navigate", url=url, tab_id=tab_id)
+    cleaned = _clean_tab_id(tab_id)
+    res = browser_service.execute_action(user_id=1, action="navigate", url=url, tab_id=cleaned)
     return res.message
 
 @tool
@@ -68,7 +79,8 @@ def browser_snapshot(tab_id: Optional[str] = None) -> str:
     Args:
         tab_id: Optional tab ID to snapshot. Defaults to active tab.
     """
-    res = browser_service.snapshot(user_id=1, tab_id=tab_id)
+    cleaned = _clean_tab_id(tab_id)
+    res = browser_service.snapshot(user_id=1, tab_id=cleaned)
     if res.status == "success" and res.snapshot:
         return res.snapshot.formatted_snapshot
     return f"Snapshot error: {res.message}"

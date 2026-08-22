@@ -6,6 +6,7 @@ import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 export const documentsRouter = Router();
 
 const PYTHON_SERVER_URL = process.env.PYTHON_SERVER_URL || 'http://127.0.0.1:8001';
+const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || 'clever-internal-agent-secret-key-prod-2026';
 const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = new Set(['.pdf', '.docx', '.pptx', '.xlsx', '.xls', '.csv', '.txt', '.md', '.html', '.htm', '.json', '.xml']);
 

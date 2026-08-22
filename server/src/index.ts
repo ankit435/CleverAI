@@ -6,6 +6,7 @@ import { chatRouter } from './routes/chat.js';
 import { authRouter } from './routes/auth.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { documentsRouter } from './routes/documents.js';
+import { pluginsRouter } from './routes/plugins.js';
 import { browserRouter } from './routes/browser.js';
 import { initDb } from './config/initDb.js';
 import { prisma } from './config/prisma.js';

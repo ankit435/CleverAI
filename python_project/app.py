@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
+import os
 
 from config import settings
 from memory.manager import memory_manager

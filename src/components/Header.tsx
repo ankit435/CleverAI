@@ -1,6 +1,6 @@
 import React from 'react';
 import { useChatContext } from '../context/ChatContext';
-import { Plus, Menu, Moon, Sun, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { Plus, Menu, Moon, Sun, SlidersHorizontal, Trash2, Compass } from 'lucide-react';
 
 export const Header: React.FC = () => {
   const {
@@ -10,7 +10,9 @@ export const Header: React.FC = () => {
     createNewChat,
     deleteChat,
     toggleSidebar,
-    setIsPluginModalOpen
+    setIsPluginModalOpen,
+    setIsBrowserModalOpen,
+    browserStatus
   } = useChatContext();
 
   const handleDeleteActiveChat = () => {
@@ -33,6 +35,28 @@ export const Header: React.FC = () => {
       </div>
 
       <div className="header-actions">
+        {/* Browser AI Agent Controller Trigger */}
+        <button 
+          className="btn-theme-toggle" 
+          onClick={() => setIsBrowserModalOpen(true)}
+          title="Browser AI Agent — Connect & Control Existing Browser"
+          style={{ position: 'relative' }}
+        >
+          <Compass size={18} style={{ color: '#06b6d4' }} />
+          <span 
+            style={{
+              position: 'absolute',
+              top: '6px',
+              right: '6px',
+              width: '7px',
+              height: '7px',
+              borderRadius: '50%',
+              backgroundColor: browserStatus?.connected ? '#10b981' : '#64748b',
+              boxShadow: browserStatus?.connected ? '0 0 6px #10b981' : 'none'
+            }} 
+          />
+        </button>
+
         {activeChat && (
           <button 
             className="btn-theme-toggle" 

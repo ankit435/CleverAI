@@ -55,17 +55,31 @@ class TabManager:
 
     def get_page_by_id(self, context: Optional[BrowserContext], tab_id: Optional[str] = None) -> Tuple[Optional[Page], Optional[str]]:
         """Retrieve target Playwright Page instance by tab_id or active tab."""
+        if not context:
+            return None, "Browser context not connected."
+
         self.sync_tabs(context)
+
+        # Sanitize tab_id against LLM string representations of None
+        if isinstance(tab_id, str) and tab_id.lower().strip() in ("none", "null", "undefined", "", "0"):
+            tab_id = None
+
         target_id = tab_id or self._active_tab_id
 
-        if not target_id:
-            if self._tab_map:
-                target_id = next(iter(self._tab_map.keys()))
-                self._active_tab_id = target_id
-            else:
-                return None, "No active tabs available."
+        if not target_id or not self._tab_map:
+            try:
+                context.new_page()
+                self.sync_tabs(context)
+                target_id = self._active_tab_id or (next(iter(self._tab_map.keys())) if self._tab_map else "tab_1")
+            except Exception as e:
+                return None, f"Failed to create page: {str(e)}"
 
         page = self._tab_map.get(target_id)
+        if not page and self._tab_map:
+            # Resilient fallback to active tab or first tab
+            target_id = self._active_tab_id or next(iter(self._tab_map.keys()))
+            page = self._tab_map.get(target_id)
+
         if not page:
             return None, f"Tab '{target_id}' not found. Available tabs: {list(self._tab_map.keys())}"
 
@@ -95,16 +109,18 @@ class TabManager:
             return False, "Browser context not connected.", None
 
         try:
+            from browser.security_manager import security_manager
+            target_url = security_manager.normalize_url(url)
             page = context.new_page()
-            if url and url != "about:blank":
-                page.goto(url, wait_until="domcontentloaded")
+            if target_url and target_url != "about:blank":
+                page.goto(target_url, wait_until="domcontentloaded")
 
             tabs = self.sync_tabs(context)
             new_tab = tabs[-1] if tabs else None
             if new_tab:
                 self._active_tab_id = new_tab.id
-                return True, f"Opened new tab '{new_tab.id}' at '{url}'", new_tab
-            return True, f"Opened new tab at '{url}'", None
+                return True, f"Opened new tab '{new_tab.id}' at '{target_url}'", new_tab
+            return True, f"Opened new tab at '{target_url}'", None
         except Exception as e:
             return False, f"Failed to open new tab: {str(e)}", None
 

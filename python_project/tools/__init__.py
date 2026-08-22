@@ -1,6 +1,7 @@
-"""Tools package exporting web_search, browser_agent, playwright_browser, code_interpreter, image_generator, calculator, dynamic_tool_builder, and executor."""
+"""Tools package exporting web_search, browser_agent, job_intelligence, code_interpreter, image_generator, calculator, dynamic_tool_builder, and executor."""
 from tools.web_search import web_search, perform_web_search
 from tools.browser_agent import browse_webpage, search_and_browse, fetch_and_read_webpage
+from tools.job_intelligence import find_and_rank_jobs, fetch_and_rank_jobs
 from tools.playwright_browser import interactive_browser_action, perform_interactive_browser_action
 from tools.code_interpreter import code_interpreter, execute_sandboxed_python
 from tools.image_generator import generate_image, generate_ai_image
@@ -14,6 +15,8 @@ __all__ = [
     "browse_webpage",
     "search_and_browse",
     "fetch_and_read_webpage",
+    "find_and_rank_jobs",
+    "fetch_and_rank_jobs",
     "interactive_browser_action",
     "perform_interactive_browser_action",
     "code_interpreter",

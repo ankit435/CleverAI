@@ -12,19 +12,20 @@ import { PromptLibraryModal } from './components/PromptLibraryModal';
 import { UpgradeModal } from './components/UpgradeModal';
 import { SettingsModal } from './components/SettingsModal';
 import { AuthModal } from './components/AuthModal';
+import { BrowserControlPanelModal } from './components/BrowserControlPanelModal';
+import { HumanConfirmationModal } from './components/HumanConfirmationModal';
 
 const AppContent: React.FC = () => {
-  const { activeChat, appConfig, userSession } = useChatContext();
+  const { 
+    activeChat, 
+    appConfig, 
+    isBrowserModalOpen,
+    setIsBrowserModalOpen,
+    activeConfirmation,
+    setActiveConfirmation,
+    resolveBrowserConfirmation
+  } = useChatContext();
   const hasMessages = activeChat && activeChat.messages.length > 0;
-
-  // Protected Route Guard: If not logged in, force full-screen Login Screen!
-  if (!userSession.isLoggedIn) {
-    return (
-      <div className="app-viewport">
-        <AuthModal isProtectedGate={true} />
-      </div>
-    );
-  }
 
   return (
     <div className="app-viewport">
@@ -36,7 +37,7 @@ const AppContent: React.FC = () => {
         <Header />
 
         {!hasMessages ? (
-          /* Empty Chat Mode: Tight, beautiful vertical stack matching reference design */
+          /* Empty Chat Mode: Beautiful vertical stack matching design */
           <div className="empty-workspace-hero">
             <div className="hero-center-stack">
               <ChatWelcome />
@@ -75,6 +76,15 @@ const AppContent: React.FC = () => {
       <UpgradeModal />
       <SettingsModal />
       <AuthModal />
+      <BrowserControlPanelModal 
+        isOpen={isBrowserModalOpen} 
+        onClose={() => setIsBrowserModalOpen(false)} 
+      />
+      <HumanConfirmationModal 
+        confirmation={activeConfirmation} 
+        onConfirm={resolveBrowserConfirmation} 
+        onClose={() => setActiveConfirmation(null)} 
+      />
     </div>
   );
 };

@@ -30,6 +30,7 @@ def get_chat_model(model_name: Optional[str] = None, temperature: float = 1.0, m
             temperature=temperature,
             top_p=0.95,
             max_tokens=max_tokens,
+            timeout=180,
             model_kwargs=model_kwargs
         )
 
@@ -75,4 +76,5 @@ def get_chat_model(model_name: Optional[str] = None, temperature: float = 1.0, m
         api_key=settings.nvidia_api_key,
         temperature=temperature,
         max_tokens=max_tokens,
+        timeout=180,
     )

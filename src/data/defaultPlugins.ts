@@ -10,6 +10,16 @@ export const CATEGORIES: CategoryInfo[] = [
 
 export const INITIAL_PLUGINS: Plugin[] = [
   {
+    id: 'browser-agent',
+    name: 'Browser AI Agent',
+    description: 'Connects to your existing browser session to navigate, inspect DOM, click, and manage tabs.',
+    icon: '🧭',
+    category: 'search',
+    enabled: true,
+    author: 'Clever AI',
+    version: '2.0.0'
+  },
+  {
     id: 'web-search',
     name: 'Web Search Engine',
     description: 'Searches real-time internet information with live source citations.',

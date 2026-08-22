@@ -133,5 +133,45 @@ export const apiClient = {
 
     deleteCustom: (id: string) =>
       apiFetch(`/plugins/custom/${id}`, { method: 'DELETE' })
+  },
+
+  // Production Browser AI Agent Platform Endpoints
+  browser: {
+    getStatus: () => apiFetch('/browser/status', { method: 'GET' }),
+
+    connect: (payload?: { mode?: string; cdpUrl?: string; userDataDir?: string }) =>
+      apiFetch('/browser/connect', { method: 'POST', body: JSON.stringify(payload || {}) }),
+
+    disconnect: () => apiFetch('/browser/disconnect', { method: 'POST' }),
+
+    getTabs: () => apiFetch('/browser/tabs', { method: 'GET' }),
+
+    selectTab: (tabId: string) =>
+      apiFetch('/browser/tabs/select', { method: 'POST', body: JSON.stringify({ tabId }) }),
+
+    openTab: (url: string) =>
+      apiFetch('/browser/tabs/open', { method: 'POST', body: JSON.stringify({ url }) }),
+
+    closeTab: (tabId: string) =>
+      apiFetch('/browser/tabs/close', { method: 'POST', body: JSON.stringify({ tabId }) }),
+
+    snapshot: (tabId?: string) =>
+      apiFetch('/browser/snapshot', { method: 'POST', body: JSON.stringify({ tabId }) }),
+
+    executeAction: (payload: {
+      action: string;
+      selector?: string;
+      textInput?: string;
+      url?: string;
+      elementId?: number;
+      key?: string;
+      direction?: string;
+      pixels?: number;
+      tabId?: string;
+      confirmed?: boolean;
+    }) => apiFetch('/browser/action', { method: 'POST', body: JSON.stringify(payload) }),
+
+    confirmAction: (payload: { confirmationId: string; approved: boolean }) =>
+      apiFetch('/browser/confirm', { method: 'POST', body: JSON.stringify(payload) })
   }
 };

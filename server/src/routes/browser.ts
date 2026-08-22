@@ -52,7 +52,7 @@ async function callPythonBrowserService(endpoint: string, method: string = 'POST
       'x-internal-service-key': INTERNAL_SERVICE_KEY
     },
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(15000)
+    signal: AbortSignal.timeout(3000)
   });
 
   if (!res.ok) {
@@ -125,10 +125,10 @@ browserRouter.post('/disconnect', async (req: AuthenticatedRequest, res: Respons
 
 // 3. GET /api/v1/browser/status
 browserRouter.get('/status', async (req: AuthenticatedRequest, res: Response) => {
+  const userId = Number(req.user!.id);
   try {
-    const userId = Number(req.user!.id);
     const pyData = await callPythonBrowserService(`/api/v1/browser/status?userId=${userId}`, 'GET');
-    res.json(pyData);
+    res.json({ ...pyData, userId, user_id: userId });
   } catch (err: any) {
     res.json({
       connected: false,
@@ -137,6 +137,8 @@ browserRouter.get('/status', async (req: AuthenticatedRequest, res: Response) =>
       tabs_count: 0,
       active_tab: null,
       tabs: [],
+      userId,
+      user_id: userId,
       error: err.message
     });
   }

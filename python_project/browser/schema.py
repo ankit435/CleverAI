@@ -1,4 +1,4 @@
-"""Core Types, Enums, and Dataclasses for the Browser AI Agent Platform."""
+"""Core Types, Enums, and Dataclasses for the Autonomous Hybrid Browser Agent Platform."""
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
@@ -15,6 +15,26 @@ class RiskLevel(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
+class TaskRequirement(str, Enum):
+    NO_BROWSER = "no_browser"
+    PUBLIC_BROWSER = "public_browser"
+    AUTHENTICATED_BROWSER = "authenticated_browser"
+
+class PolicyStrategy(str, Enum):
+    NO_ACTION = "no_action"
+    USE_EXISTING = "use_existing"
+    LAUNCH_MANAGED = "launch_managed"
+    PROMPT_USER_TO_CONNECT = "prompt_user_to_connect"
+
+class PolicyDecision(BaseModel):
+    needs_browser: bool
+    task_requirement: TaskRequirement
+    requires_auth: bool
+    strategy: PolicyStrategy
+    reason: str
+    target_url: Optional[str] = None
+    action_suggestion: Optional[str] = None
 
 class TabInfo(BaseModel):
     id: str = Field(..., description="Unique identifier for the tab")
@@ -46,10 +66,11 @@ class PageSnapshot(BaseModel):
     formatted_snapshot: str = Field(default="", description="LLM-ready structured snapshot representation")
 
 class BrowserStatus(BaseModel):
-    connected: bool
-    mode: BrowserMode
+    connected: bool = False
+    mode: BrowserMode = BrowserMode.EXISTING_CDP
     endpoint: Optional[str] = None
-    browser_type: str = "chromium"
+    cdp_endpoint: Optional[str] = None
+    browser_type: Optional[str] = "Chromium"
     version: Optional[str] = None
     tabs_count: int = 0
     active_tab: Optional[TabInfo] = None
