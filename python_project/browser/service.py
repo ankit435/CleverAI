@@ -191,7 +191,10 @@ class BrowserService:
         selector: Optional[str] = None,
         text_input: Optional[str] = None,
         url: Optional[str] = None,
-        element_id: Optional[int] = None,
+        element_id: Optional[Any] = None,
+        role: Optional[str] = None,
+        name: Optional[str] = None,
+        coordinates: Optional[Tuple[float, float]] = None,
         key: Optional[str] = None,
         direction: str = "down",
         pixels: int = 500,
@@ -265,19 +268,35 @@ class BrowserService:
             if act == "navigate" and url:
                 return PageController.navigate(page, url)
             elif act == "click":
-                return PageController.click(page, selector=selector, text=text_input, element_id=element_id)
+                return PageController.click(
+                    page,
+                    selector=selector,
+                    text=text_input,
+                    element_id=element_id,
+                    role=role,
+                    name=name,
+                    coordinates=coordinates
+                )
             elif act in ("type", "fill") and text_input is not None:
                 return PageController.type_text(page, text=text_input, selector=selector, element_id=element_id)
             elif act == "press_key" and (key or text_input):
                 return PageController.press_key(page, key=key or text_input or "Enter")
             elif act == "scroll":
                 return PageController.scroll(page, direction=direction, pixels=pixels)
+            elif act == "hover":
+                return PageController.hover(page, selector=selector, element_id=element_id)
+            elif act == "wait":
+                return PageController.wait(page, seconds=float(pixels if pixels < 60 else 1.0))
             elif act == "screenshot":
                 return PageController.take_screenshot(page)
             elif act == "go_back":
                 return PageController.go_back(page)
             elif act == "go_forward":
                 return PageController.go_forward(page)
+            elif act == "recover_page":
+                return PageController.recover_invalid_page(page, user_goal=text_input or "")
+            elif act == "generic_search":
+                return PageController.generic_search(page, query=text_input or "")
             elif act == "snapshot":
                 return self.snapshot(user_id, tab_id)
             else:

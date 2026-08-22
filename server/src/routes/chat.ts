@@ -186,7 +186,7 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
           documentContext,
           history: historyList
         }),
-        ...(process.env.NODE_ENV === 'test' ? { signal: AbortSignal.timeout(800) } : {})
+        signal: process.env.NODE_ENV === 'test' ? AbortSignal.timeout(800) : AbortSignal.timeout(120000)
       });
 
       if (pyResponse.ok) {

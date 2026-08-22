@@ -37,8 +37,7 @@ class BrowserSecurityManager:
     @staticmethod
     def normalize_url(raw_url: str) -> str:
         """
-        Intelligently normalizes raw user/agent inputs like 'youtube', 'github.com',
-        or search queries into valid, fully-qualified URLs with protocols.
+        Ensures a URL has a valid protocol prefix without storing or hardcoding any specific site URLs.
         """
         if not raw_url:
             return "about:blank"
@@ -47,32 +46,9 @@ class BrowserSecurityManager:
             return cleaned
         if cleaned.startswith(("http://", "https://", "file://", "chrome://")):
             return cleaned
-        
-        known_shortcuts = {
-            "youtube": "https://www.youtube.com",
-            "google": "https://www.google.com",
-            "github": "https://github.com",
-            "amazon": "https://www.amazon.com",
-            "twitter": "https://x.com",
-            "x": "https://x.com",
-            "reddit": "https://www.reddit.com",
-            "wikipedia": "https://www.wikipedia.org",
-            "linkedin": "https://www.linkedin.com",
-            "gmail": "https://mail.google.com",
-            "hackernews": "https://news.ycombinator.com",
-            "hacker news": "https://news.ycombinator.com"
-        }
-        lower = cleaned.lower()
-        if lower in known_shortcuts:
-            return known_shortcuts[lower]
-
         if "." in cleaned and " " not in cleaned:
             return f"https://{cleaned}"
-
-        if " " in cleaned:
-            return f"https://www.google.com/search?q={urllib.parse.quote(cleaned)}"
-
-        return f"https://www.{cleaned}.com"
+        return f"https://{cleaned}"
 
     def validate_url(self, url: str) -> Tuple[bool, Optional[str]]:
         """Validate destination URL against SSRF, dangerous protocols, and blocked cloud metadata."""

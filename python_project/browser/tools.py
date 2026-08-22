@@ -89,21 +89,70 @@ def browser_snapshot(tab_id: Optional[str] = None) -> str:
 def browser_click(
     selector: Optional[str] = None,
     text: Optional[str] = None,
-    element_id: Optional[int] = None,
+    element_id: Optional[str] = None,
+    role: Optional[str] = None,
+    name: Optional[str] = None,
     tab_id: Optional[str] = None
 ) -> str:
     """
-    Click an interactive button, link, or element on the page using its numbered snapshot ID, text, or CSS selector.
+    Click an interactive button, link, or element using the multi-strategy resolution order:
+    1. Accessibility role & accessible name (e.g. role='button', name='Submit')
+    2. Stable DOM attributes (e.g. selector='[data-testid="search-btn"]')
+    3. Visible text (e.g. text='Pull requests')
+    4. Snapshot Element ID reference (e.g. element_id='e1' or '1')
+    5. Visual location / coordinates
     Args:
-        selector: Optional CSS selector (e.g. 'button.submit', '#search-btn').
-        text: Optional visible text of the button or link (e.g. 'Pull requests', 'Compose').
-        element_id: Optional numbered ID from the latest snapshot (e.g. 1, 2, 3).
+        selector: Optional CSS / stable selector (e.g. 'button.submit', '[data-testid="btn"]').
+        text: Optional visible text of the button or link (e.g. 'Repositories', 'Apply Now').
+        element_id: Optional snapshot element identifier (e.g. 'e1', 'e15', or '15').
+        role: Optional ARIA role (e.g. 'button', 'link', 'tab').
+        name: Optional accessible name / label.
         tab_id: Optional target tab ID.
     """
+    cleaned_tab = _clean_tab_id(tab_id)
     res = browser_service.execute_action(
-        user_id=1, action="click", selector=selector, text_input=text, element_id=element_id, tab_id=tab_id
+        user_id=1,
+        action="click",
+        selector=selector,
+        text_input=text,
+        element_id=element_id,
+        role=role,
+        name=name,
+        tab_id=cleaned_tab
     )
     return res.message
+
+@tool
+def browser_paginate(tab_id: Optional[str] = None) -> str:
+    """
+    Autonomously detect and click the 'Next' page, 'Load More', or pagination button on the active page.
+    Args:
+        tab_id: Optional target tab ID.
+    """
+    from browser.goal_tracker import goal_tracker
+    cleaned_tab = _clean_tab_id(tab_id)
+    
+    def _task():
+        session = browser_service.session_manager.get_session(1)
+        if not session or not session.context:
+            return "Browser not connected."
+        page, err = session.tab_manager.get_page_by_id(session.context, cleaned_tab)
+        if err or not page:
+            return f"Page error: {err}"
+        
+        has_next, next_sel, next_id = goal_tracker.detect_pagination_or_next(page)
+        if not has_next:
+            return "No next page or pagination controls detected on current page."
+        
+        click_res = browser_service.execute_action(
+            user_id=1, action="click", selector=next_sel, element_id=next_id, tab_id=cleaned_tab
+        )
+        return f"Paginated to next page: {click_res.message}"
+
+    try:
+        return browser_service.worker.run(_task)
+    except Exception as e:
+        return f"Pagination error: {str(e)}"
 
 @tool
 def browser_type(
@@ -168,13 +217,47 @@ def browser_screenshot(tab_id: Optional[str] = None) -> str:
 @tool
 def browser_go_back(tab_id: Optional[str] = None) -> str:
     """Navigate back in browser history."""
-    res = browser_service.execute_action(user_id=1, action="go_back", tab_id=tab_id)
+    res = browser_service.execute_action(user_id=1, action="go_back", tab_id=_clean_tab_id(tab_id))
     return res.message
 
 @tool
 def browser_go_forward(tab_id: Optional[str] = None) -> str:
     """Navigate forward in browser history."""
-    res = browser_service.execute_action(user_id=1, action="go_forward", tab_id=tab_id)
+    res = browser_service.execute_action(user_id=1, action="go_forward", tab_id=_clean_tab_id(tab_id))
+    return res.message
+
+@tool
+def browser_hover(selector: Optional[str] = None, element_id: Optional[str] = None, tab_id: Optional[str] = None) -> str:
+    """Hover over an interactive button, menu, or element."""
+    res = browser_service.execute_action(user_id=1, action="hover", selector=selector, element_id=element_id, tab_id=_clean_tab_id(tab_id))
+    return res.message
+
+@tool
+def browser_wait(seconds: float = 1.0, tab_id: Optional[str] = None) -> str:
+    """Wait dynamically for the active page to finish network / DOM settling."""
+    res = browser_service.execute_action(user_id=1, action="wait", pixels=int(seconds), tab_id=_clean_tab_id(tab_id))
+    return res.message
+
+@tool
+def browser_generic_search(query: str, tab_id: Optional[str] = None) -> str:
+    """
+    Autonomously locate the search input box on the active webpage, type the query, and submit.
+    Args:
+        query: Search keywords or product query.
+        tab_id: Optional target tab ID.
+    """
+    res = browser_service.execute_action(user_id=1, action="generic_search", text_input=query, tab_id=_clean_tab_id(tab_id))
+    return res.message
+
+@tool
+def browser_recover_page(user_goal: str = "", tab_id: Optional[str] = None) -> str:
+    """
+    Recover from a 404 or dead page by finding the Home/Navigation link and returning to a usable page.
+    Args:
+        user_goal: The user's original objective.
+        tab_id: Optional target tab ID.
+    """
+    res = browser_service.execute_action(user_id=1, action="recover_page", text_input=user_goal, tab_id=_clean_tab_id(tab_id))
     return res.message
 
 ALL_BROWSER_TOOLS = [
@@ -188,7 +271,12 @@ ALL_BROWSER_TOOLS = [
     browser_type,
     browser_press_key,
     browser_scroll,
+    browser_hover,
+    browser_wait,
     browser_screenshot,
     browser_go_back,
-    browser_go_forward
+    browser_go_forward,
+    browser_generic_search,
+    browser_recover_page,
+    browser_paginate
 ]

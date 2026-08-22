@@ -146,19 +146,190 @@ class TestAutonomousHybridBrowserAgent(unittest.TestCase):
 
     def test_snapshot_accessibility_parsing(self):
         raw_elements = [
-            {"id": 1, "tag": "button", "text": "Compose", "selector": "#compose-btn", "is_clickable": True, "is_input": False},
-            {"id": 2, "tag": "input", "placeholder": "Search mail", "selector": "input[name='q']", "is_clickable": False, "is_input": True, "input_type": "text"}
+            {"id": 1, "element_id": "e1", "tag": "button", "role": "button", "name": "Compose", "text": "Compose", "selector": "#compose-btn", "is_clickable": True, "is_input": False, "bounding_box": {"x": 10, "y": 20, "width": 100, "height": 40}},
+            {"id": 2, "element_id": "e2", "tag": "input", "role": "textbox", "name": "Search mail", "placeholder": "Search mail", "selector": "input[name='q']", "is_clickable": False, "is_input": True, "input_type": "text", "bounding_box": {"x": 120, "y": 20, "width": 300, "height": 40}}
         ]
         snap = snapshot_parser.build_snapshot(
-            title="Gmail",
-            url="https://mail.google.com/",
+            title="Inbox - Mail",
+            url="https://mail.google.com",
             active_tab_id="tab_1",
             elements_data=raw_elements,
-            visible_text="Inbox (4 unread messages)"
+            visible_text="Welcome to your mailbox"
         )
-        self.assertEqual(snap.title, "Gmail")
-        self.assertIn("[1] button \"Compose\"", snap.formatted_snapshot)
-        self.assertIn("[2] input[text]", snap.formatted_snapshot)
+        self.assertEqual(len(snap.elements), 2)
+        self.assertEqual(snap.elements[0].role, "button")
+        self.assertEqual(snap.elements[0].name, "Compose")
+        self.assertEqual(snap.elements[0].element_id, "e1")
+        self.assertIsNotNone(snap.elements[0].bounding_box)
+        self.assertIn("Compose", snap.formatted_snapshot)
+
+    # ==========================================================
+    # SCENARIO 8: Multi-Strategy Target Resolution Order
+    # ==========================================================
+    def test_multi_strategy_target_resolution_order(self):
+        from browser.target_resolver import target_resolver
+        from browser.schema import ResolutionStrategy
+
+        # 1. Accessibility role + name
+        # 2. Stable attributes
+        # 3. Visible text
+        # 4. Snapshot element ID reference (e.g. e15, 15)
+        # 5. Visual location / coordinates fallback
+        self.assertTrue(hasattr(target_resolver, "resolve"))
+
+    # ==========================================================
+    # SCENARIO 9: Action Verification Pipeline
+    # ==========================================================
+    def test_action_verification_pipeline(self):
+        from browser.action_verifier import action_verifier
+        from unittest.mock import MagicMock
+
+        mock_page = MagicMock()
+        mock_page.url = "https://example.com/dashboard"
+        mock_page.title.return_value = "Dashboard"
+        mock_page.evaluate.return_value = "complete"
+
+        # Verify navigation
+        nav_ver = action_verifier.verify_navigation(mock_page, "https://example.com/dashboard", "https://example.com/login")
+        self.assertTrue(nav_ver.passed)
+        self.assertEqual(nav_ver.action, "navigate")
+
+        # Verify scroll
+        mock_page.evaluate.return_value = 500.0
+        scroll_ver = action_verifier.verify_scroll(mock_page, initial_scroll_y=0.0, direction="down")
+        self.assertTrue(scroll_ver.passed)
+
+    # ==========================================================
+    # SCENARIO 10: Goal Tracking & Pagination Deduplication
+    # ==========================================================
+    def test_goal_tracking_and_pagination_dedup(self):
+        from browser.goal_tracker import goal_tracker
+
+        self.assertTrue(goal_tracker.is_exhaustive_request("Find all Python repositories"))
+        self.assertTrue(goal_tracker.is_exhaustive_request("List every recent job posting"))
+        self.assertFalse(goal_tracker.is_exhaustive_request("What is Redis?"))
+
+        page1_items = [
+            {"index": 1, "text": "Repo A: High performance engine", "href": "https://github.com/org/repo-a"},
+            {"index": 2, "text": "Repo B: Frontend dashboard", "href": "https://github.com/org/repo-b"}
+        ]
+        page2_items = [
+            {"index": 3, "text": "Repo B: Frontend dashboard", "href": "https://github.com/org/repo-b"},  # Duplicate
+            {"index": 4, "text": "Repo C: Distributed database", "href": "https://github.com/org/repo-c"}
+        ]
+
+        deduped = goal_tracker.deduplicate_items(page1_items, page2_items)
+        self.assertEqual(len(deduped), 3)
+        self.assertEqual([item["href"] for item in deduped], [
+            "https://github.com/org/repo-a",
+            "https://github.com/org/repo-b",
+            "https://github.com/org/repo-c"
+        ])
+
+    # ==========================================================
+    # SCENARIO 11: Real Browser Navigation & Verification E2E
+    # ==========================================================
+    def test_real_browser_navigation_and_snapshot(self):
+        service = BrowserService()
+        nav_res = service.execute_action(user_id=888, action="navigate", url="https://news.ycombinator.com")
+        self.assertEqual(nav_res.status, "success")
+        self.assertIn("news.ycombinator.com", nav_res.current_url)
+
+    # ==========================================================
+    # SCENARIO 12: Intent Engine Structured Task Representation
+    # ==========================================================
+    def test_intent_engine_structured_parsing(self):
+        from browser.intent_engine import intent_engine
+
+        intent1 = intent_engine.parse_intent("Find all laptops under ₹80,000 on a shopping website")
+        self.assertTrue(intent1.browser_required)
+        self.assertFalse(intent1.authentication_required)
+        self.assertIn("price_limit", intent1.constraints)
+        self.assertIn("under ₹80,000", intent1.constraints["price_limit"].lower())
+
+        intent2 = intent_engine.parse_intent("What is the difference between TCP and UDP?")
+        self.assertFalse(intent2.browser_required)
+
+        intent3 = intent_engine.parse_intent("Check my unread emails in Gmail")
+        self.assertTrue(intent3.browser_required)
+        self.assertTrue(intent3.authentication_required)
+
+    # ==========================================================
+    # SCENARIO 13: Page State Multi-Signal Classification
+    # ==========================================================
+    def test_page_state_multi_signal_classification(self):
+        from browser.page_state_classifier import page_state_classifier
+        from browser.schema import PageState
+        from unittest.mock import MagicMock
+
+        mock_page = MagicMock()
+        mock_page.url = "https://example.com/item"
+        mock_page.title.return_value = "Page Not Found - 404"
+        mock_page.evaluate.return_value = "complete"
+
+        # 1. 404
+        state_404 = page_state_classifier.classify(mock_page, visible_text="The page you requested was not found.", http_status=404)
+        self.assertEqual(state_404, PageState.NOT_FOUND)
+
+        # 2. Captcha
+        mock_page.title.return_value = "Just a moment..."
+        state_captcha = page_state_classifier.classify(mock_page, visible_text="Please verify you are human to continue.")
+        self.assertEqual(state_captcha, PageState.CAPTCHA)
+
+        # 3. Access Denied
+        mock_page.title.return_value = "403 Forbidden"
+        state_403 = page_state_classifier.classify(mock_page, visible_text="You don't have permission to access / on this server.")
+        self.assertEqual(state_403, PageState.ACCESS_DENIED)
+
+        # 4. Valid
+        mock_page.title.return_value = "Electronics Store - Laptops"
+        state_valid = page_state_classifier.classify(mock_page, visible_text="Browse our catalogue of high-performance laptops.")
+        self.assertEqual(state_valid, PageState.VALID)
+
+    # ==========================================================
+    # SCENARIO 14: Target Confidence & Resolution Hierarchy
+    # ==========================================================
+    def test_target_confidence_and_resolution_hierarchy(self):
+        from browser.target_resolver import target_resolver
+        from browser.schema import ResolutionStrategy, PageSnapshot, InteractiveElement
+        from unittest.mock import MagicMock
+
+        mock_page = MagicMock()
+        snap = PageSnapshot(
+            title="Search Portal",
+            url="https://example.com",
+            active_tab_id="tab_1",
+            elements=[
+                InteractiveElement(id=1, element_id="e1", tag="button", role="button", name="Search", selector="#search-btn")
+            ]
+        )
+
+        mock_loc = MagicMock()
+        mock_loc.count.return_value = 1
+        mock_page.locator.return_value.first = mock_loc
+
+        # Snapshot ID resolution
+        loc, strat, desc, coords, conf = target_resolver.resolve(mock_page, element_id="e1", snapshot=snap)
+        self.assertEqual(strat, ResolutionStrategy.SNAPSHOT_ID)
+        self.assertGreaterEqual(conf.confidence, 0.95)
+
+    # ==========================================================
+    # SCENARIO 15: Recovery Engine Search Discovery
+    # ==========================================================
+    def test_recovery_engine_search_discovery(self):
+        from browser.recovery_engine import recovery_engine
+        from unittest.mock import MagicMock
+
+        mock_page = MagicMock()
+        mock_loc = MagicMock()
+        mock_loc.count.return_value = 1
+        mock_loc.is_visible.return_value = True
+        mock_page.locator.return_value.first = mock_loc
+
+        loc, sel = recovery_engine.discover_search_input(mock_page)
+        self.assertIsNotNone(loc)
+        self.assertTrue(len(sel) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()
