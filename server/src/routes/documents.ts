@@ -34,7 +34,7 @@ documentsRouter.post('/upload', raw({ type: 'application/octet-stream', limit: M
 
   try {
     const form = new FormData();
-    form.append('file', new Blob([file], { type: mimeType }), filename);
+    form.append('file', new Blob([new Uint8Array(file)], { type: mimeType }), filename);
     const conversion = await fetch(`${PYTHON_SERVER_URL}/api/v1/documents/convert`, {
       method: 'POST', body: form, signal: AbortSignal.timeout(120_000)
     });
