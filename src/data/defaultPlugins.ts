@@ -10,6 +10,16 @@ export const CATEGORIES: CategoryInfo[] = [
 
 export const INITIAL_PLUGINS: Plugin[] = [
   {
+    id: 'browser-agent',
+    name: 'Live Web Browser Agent',
+    description: 'Navigates web URLs, reads live websites, and extracts real-time page content.',
+    icon: '🧭',
+    category: 'search',
+    enabled: true,
+    author: 'Clever AI',
+    version: '1.5.0'
+  },
+  {
     id: 'web-search',
     name: 'Web Search Engine',
     description: 'Searches real-time internet information with live source citations.',

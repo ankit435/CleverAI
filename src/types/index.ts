@@ -8,20 +8,27 @@ export interface CategoryInfo {
   color: string;
 }
 
-export type PluginCategory = 'search' | 'code' | 'creative' | 'data' | 'document' | 'custom';
+export interface PluginCategoryInfo {
+  id: string;
+  label: string;
+  color: string;
+}
 
 export interface Plugin {
   id: string;
   name: string;
   description: string;
   icon: string;
-  category: PluginCategory;
+  category: string;
   enabled: boolean;
+  isAvailable?: boolean;
+  statusMessage?: string;
   isCustom?: boolean;
   author?: string;
   version?: string;
   endpointUrl?: string;
   method?: 'GET' | 'POST';
+  params?: any;
 }
 
 export interface ToolExecutionResult {
@@ -30,7 +37,7 @@ export interface ToolExecutionResult {
   status: 'running' | 'success' | 'error';
   executionTimeMs?: number;
   data?: {
-    type: 'image' | 'code' | 'search' | 'chart' | 'document' | 'raw';
+    type: 'image' | 'code' | 'search' | 'chart' | 'document' | 'raw' | 'custom_tool' | 'calculation' | 'browser_page';
     imageUrl?: string;
     imagePrompt?: string;
     codeSnippet?: string;
@@ -41,6 +48,16 @@ export interface ToolExecutionResult {
     documentSummary?: string;
     documentFilename?: string;
     rawContent?: string;
+    toolName?: string;
+    description?: string;
+    expression?: string;
+    result?: any;
+    title?: string;
+    url?: string;
+    content?: string;
+    action?: string;
+    links?: Array<{ text: string; url: string }>;
+    screenshotUrl?: string;
   };
 }
 

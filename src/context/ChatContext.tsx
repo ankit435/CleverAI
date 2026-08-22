@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Theme, ChatThread, Plugin, ChatCategory, Message, CustomToolFormData } from '../types';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { Theme, ChatThread, Plugin, PluginCategoryInfo, ChatCategory, Message, CustomToolFormData } from '../types';
 import { INITIAL_PLUGINS } from '../data/defaultPlugins';
 import { AppConfig, DEFAULT_APP_CONFIG } from '../config/appConfig';
 import { apiClient } from '../config/apiClient';
@@ -29,14 +29,19 @@ interface ChatContextType {
   activeChat: ChatThread | null;
   setActiveChatId: (id: string | null) => void;
   createNewChat: () => void;
-  deleteChat: (id: string) => void;
+  deleteChat: (id: string) => Promise<void>;
+  clearAllChats: () => Promise<void>;
+  loadConversations: (targetUserId?: string | number) => Promise<void>;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   selectedCategory: ChatCategory | 'all';
   setSelectedCategory: (cat: ChatCategory | 'all') => void;
   plugins: Plugin[];
-  togglePlugin: (id: string) => void;
-  addCustomTool: (data: CustomToolFormData) => void;
+  pluginCategories: PluginCategoryInfo[];
+  togglePlugin: (id: string) => Promise<void>;
+  addCustomTool: (data: CustomToolFormData) => Promise<void>;
+  deleteCustomTool: (id: string) => Promise<void>;
+  loadPlugins: () => Promise<void>;
   activePluginIds: string[];
   toggleActivePluginId: (id: string) => void;
   isGenerating: boolean;
@@ -60,36 +65,20 @@ interface ChatContextType {
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
-const INITIAL_CHATS: ChatThread[] = [
-  {
-    id: 'chat-1',
-    title: 'React Dashboard UI',
-    category: 'code',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    activePluginIds: ['code-interpreter', 'web-search'],
-    messages: [
-      {
-        id: 'm1',
-        sender: 'user',
-        text: 'How can I build a responsive dashboard layout with Vite and React?',
-        timestamp: '10:14 AM'
-      },
-      {
-        id: 'm2',
-        sender: 'ai',
-        text: "Here is a complete modern dashboard component setup using React, CSS Grid, and custom design tokens. You can structure your layout with a collapsible sidebar and flexible main viewport container.",
-        timestamp: '10:14 AM'
-      }
-    ]
-  }
-];
-
 export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Config state
   const [appConfig, setAppConfig] = useState<AppConfig>(() => {
     const saved = localStorage.getItem('clever_app_config');
-    return saved ? JSON.parse(saved) : DEFAULT_APP_CONFIG;
+    if (saved) {
+      try {
+        const parsed: AppConfig = JSON.parse(saved);
+        if (!parsed.ai?.defaultModel || parsed.ai.defaultModel === 'local-ollama') {
+          parsed.ai = { ...parsed.ai, defaultModel: DEFAULT_APP_CONFIG.ai.defaultModel };
+        }
+        return parsed;
+      } catch {}
+    }
+    return DEFAULT_APP_CONFIG;
   });
 
   useEffect(() => {
@@ -107,35 +96,183 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
-  // User Session State: isLoggedIn is TRUE ONLY IF a valid token exists in localStorage
+  // User Session State: Strictly derived from JWT token and auth verification
   const [userSession, setUserSession] = useState<UserSession>(() => {
     const savedToken = localStorage.getItem('clever_jwt_token');
     const savedUser = localStorage.getItem('clever_auth_user');
     if (savedToken && savedUser) {
       try {
         const parsed = JSON.parse(savedUser);
-        if (parsed.name && !parsed.name.toLowerCase().includes('guest')) {
+        if (parsed.email) {
           return { ...parsed, isLoggedIn: true, token: savedToken };
         }
       } catch (e) {
-        // Fallback
+        // Ignore JSON parse error
       }
     }
     return {
-      name: appConfig.userProfile.name || 'Ankit',
-      email: appConfig.userProfile.email || 'ankitkumar700413@gmail.com',
-      avatarUrl: appConfig.userProfile.avatarUrl,
-      plan: appConfig.userProfile.plan || 'Free',
-      isLoggedIn: Boolean(savedToken)
+      name: '',
+      email: '',
+      avatarUrl: '',
+      plan: 'Free',
+      isLoggedIn: false
     };
   });
+
+  // Chats state - strictly isolated per user
+  const [chats, setChats] = useState<ChatThread[]>(() => {
+    const savedToken = localStorage.getItem('clever_jwt_token');
+    const savedUser = localStorage.getItem('clever_auth_user');
+    if (savedToken && savedUser) {
+      try {
+        const u = JSON.parse(savedUser);
+        if (u.id) {
+          const userSavedChats = localStorage.getItem(`clever_chats_${u.id}`);
+          if (userSavedChats) {
+            const parsed: ChatThread[] = JSON.parse(userSavedChats);
+            return parsed.map(c => ({
+              ...c,
+              messages: (c.messages || []).map(m => ({ ...m, isStreaming: false }))
+            }));
+          }
+        }
+      } catch {}
+    }
+    return [];
+  });
+
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<ChatCategory | 'all'>('all');
+
+  // Save isolated user chats
+  useEffect(() => {
+    if (userSession.isLoggedIn && userSession.id) {
+      const sanitized = chats.map(c => ({
+        ...c,
+        messages: (c.messages || []).map(m => ({ ...m, isStreaming: false }))
+      }));
+      localStorage.setItem(`clever_chats_${userSession.id}`, JSON.stringify(sanitized));
+    }
+  }, [chats, userSession.isLoggedIn, userSession.id]);
+
+  const activeChat = chats.find(c => c.id === activeChatId) || null;
+
+  // Load isolated user conversations from PostgreSQL backend
+  const loadConversations = useCallback(async (targetUserId?: string | number) => {
+    const token = localStorage.getItem('clever_jwt_token');
+    if (!token) {
+      setChats([]);
+      setActiveChatId(null);
+      return;
+    }
+
+    try {
+      const res = await apiClient.conversations.list({ limit: 50 });
+      if (res && Array.isArray(res.conversations)) {
+        const loadedThreads: ChatThread[] = await Promise.all(
+          res.conversations.map(async (c: any) => {
+            try {
+              const detail = await apiClient.conversations.get(c.id);
+              const msgs: Message[] = (detail.conversation?.messages || []).map((m: any) => ({
+                id: m.id,
+                sender: m.sender,
+                text: m.text,
+                timestamp: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                toolResults: m.metadata?.toolResults,
+                isStreaming: false
+              }));
+              return {
+                id: c.id,
+                title: c.title,
+                category: (c.category as ChatCategory) || 'favorites',
+                createdAt: c.createdAt,
+                updatedAt: c.updatedAt,
+                activePluginIds: ['web-search', 'code-interpreter', 'dalle3-image'],
+                messages: msgs
+              };
+            } catch {
+              return {
+                id: c.id,
+                title: c.title,
+                category: (c.category as ChatCategory) || 'favorites',
+                createdAt: c.createdAt,
+                updatedAt: c.updatedAt,
+                activePluginIds: ['web-search', 'code-interpreter', 'dalle3-image'],
+                messages: []
+              };
+            }
+          })
+        );
+        setChats(loadedThreads);
+        const uid = targetUserId || userSession.id;
+        if (uid) {
+          localStorage.setItem(`clever_chats_${uid}`, JSON.stringify(loadedThreads));
+        }
+      }
+    } catch (err) {
+      console.warn('Load user conversations note:', err);
+    }
+  }, [userSession.id]);
+
+  // Load plugins dynamically
+  const [plugins, setPlugins] = useState<Plugin[]>(() => {
+    const saved = localStorage.getItem('clever_plugins');
+    return saved ? JSON.parse(saved) : INITIAL_PLUGINS;
+  });
+  const [pluginCategories, setPluginCategories] = useState<PluginCategoryInfo[]>([]);
+
+  useEffect(() => {
+    localStorage.setItem('clever_plugins', JSON.stringify(plugins));
+  }, [plugins]);
+
+  const [activePluginIds, setActivePluginIds] = useState<string[]>(() => {
+    const saved = localStorage.getItem('clever_plugins');
+    if (saved) {
+      try {
+        const parsed: Plugin[] = JSON.parse(saved);
+        return parsed.filter(p => p.enabled).map(p => p.id);
+      } catch {
+        return ['web-search', 'code-interpreter', 'dalle3-image'];
+      }
+    }
+    return ['web-search', 'code-interpreter', 'dalle3-image'];
+  });
+
+  const loadPlugins = async () => {
+    const token = localStorage.getItem('clever_jwt_token');
+    if (!token) return;
+    try {
+      const data = await apiClient.plugins.list();
+      if (Array.isArray(data.plugins)) {
+        setPlugins(data.plugins);
+        const enabledIds = data.plugins
+          .filter((p: Plugin) => p.enabled && p.isAvailable !== false)
+          .map((p: Plugin) => p.id);
+        setActivePluginIds(enabledIds);
+      }
+      if (Array.isArray(data.categories)) {
+        setPluginCategories(data.categories);
+      }
+    } catch (err) {
+      console.warn('Dynamic plugin fetch note:', err);
+    }
+  };
 
   // Verify session on app load via central apiClient.auth.me()
   useEffect(() => {
     const token = localStorage.getItem('clever_jwt_token');
 
     if (!token) {
-      setUserSession(prev => ({ ...prev, isLoggedIn: false }));
+      setUserSession({
+        name: '',
+        email: '',
+        avatarUrl: '',
+        plan: 'Free',
+        isLoggedIn: false
+      });
+      setChats([]);
+      setActiveChatId(null);
       setIsAuthModalOpen(true);
       return;
     }
@@ -145,9 +282,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (data.user) {
           const verifiedSession: UserSession = {
             id: data.user.id,
-            name: data.user.name || 'Ankit',
-            email: data.user.email || 'ankitkumar700413@gmail.com',
-            avatarUrl: data.user.avatarUrl || appConfig.userProfile.avatarUrl,
+            name: data.user.name || data.user.email.split('@')[0],
+            email: data.user.email,
+            avatarUrl: data.user.avatarUrl || '',
             plan: data.user.plan || 'Free',
             isLoggedIn: true,
             token,
@@ -155,22 +292,33 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           };
           setUserSession(verifiedSession);
           localStorage.setItem('clever_auth_user', JSON.stringify(verifiedSession));
+          loadConversations(verifiedSession.id);
+          loadPlugins();
         }
       })
       .catch(() => {
         localStorage.removeItem('clever_jwt_token');
         localStorage.removeItem('clever_auth_user');
-        setUserSession(prev => ({ ...prev, isLoggedIn: false }));
+        setUserSession({
+          name: '',
+          email: '',
+          avatarUrl: '',
+          plan: 'Free',
+          isLoggedIn: false
+        });
+        setChats([]);
+        setActiveChatId(null);
         setIsAuthModalOpen(true);
       });
-  }, []);
+  }, [loadConversations]);
 
+  // Login handler
   const loginUser = (token: string, user: Partial<UserSession>) => {
     localStorage.setItem('clever_jwt_token', token);
     const newSession: UserSession = {
       id: user.id,
-      name: user.name || 'Ankit',
-      email: user.email || 'ankitkumar700413@gmail.com',
+      name: user.name || (user.email ? user.email.split('@')[0] : 'User'),
+      email: user.email || '',
       avatarUrl: user.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80',
       plan: user.plan || 'Free',
       isLoggedIn: true,
@@ -180,29 +328,30 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.setItem('clever_auth_user', JSON.stringify(newSession));
     setUserSession(newSession);
     setIsAuthModalOpen(false);
-    updateAppConfig({
-      ...appConfig,
-      userProfile: {
-        ...appConfig.userProfile,
-        name: newSession.name,
-        email: newSession.email,
-        avatarUrl: newSession.avatarUrl,
-        plan: newSession.plan
-      }
-    });
+
+    // Clear previous user's active chats immediately
+    setChats([]);
+    setActiveChatId(null);
+
+    // Load isolated user data from PostgreSQL
+    loadConversations(newSession.id);
+    loadPlugins();
   };
 
+  // Logout handler
   const logoutUser = () => {
     localStorage.removeItem('clever_jwt_token');
     localStorage.removeItem('clever_auth_user');
-    const loggedOutState: UserSession = {
-      name: 'Ankit',
-      email: 'ankitkumar700413@gmail.com',
-      avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80',
+    setUserSession({
+      name: '',
+      email: '',
+      avatarUrl: '',
       plan: 'Free',
       isLoggedIn: false
-    };
-    setUserSession(loggedOutState);
+    });
+    // Completely wipe chats and active selection on logout
+    setChats([]);
+    setActiveChatId(null);
     setIsAuthModalOpen(true);
   };
 
@@ -226,38 +375,26 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const toggleSidebar = () => setSidebarOpen(prev => !prev);
 
-  // Chats & Filters state
-  const [chats, setChats] = useState<ChatThread[]>(() => {
-    const saved = localStorage.getItem('clever_chats');
-    return saved ? JSON.parse(saved) : INITIAL_CHATS;
-  });
+  const togglePlugin = async (id: string) => {
+    const target = plugins.find(p => p.id === id);
+    if (!target) return;
+    const newEnabled = !target.enabled;
 
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<ChatCategory | 'all'>('all');
-
-  useEffect(() => {
-    localStorage.setItem('clever_chats', JSON.stringify(chats));
-  }, [chats]);
-
-  const activeChat = chats.find(c => c.id === activeChatId) || null;
-
-  // Plugins state
-  const [plugins, setPlugins] = useState<Plugin[]>(() => {
-    const saved = localStorage.getItem('clever_plugins');
-    return saved ? JSON.parse(saved) : INITIAL_PLUGINS;
-  });
-
-  useEffect(() => {
-    localStorage.setItem('clever_plugins', JSON.stringify(plugins));
-  }, [plugins]);
-
-  const [activePluginIds, setActivePluginIds] = useState<string[]>(['web-search', 'code-interpreter', 'dalle3-image']);
-
-  const togglePlugin = (id: string) => {
     setPlugins(prev =>
-      prev.map(p => (p.id === id ? { ...p, enabled: !p.enabled } : p))
+      prev.map(p => (p.id === id ? { ...p, enabled: newEnabled } : p))
     );
+
+    setActivePluginIds(prev =>
+      newEnabled
+        ? (prev.includes(id) ? prev : [...prev, id])
+        : prev.filter(item => item !== id)
+    );
+
+    try {
+      await apiClient.plugins.toggle(id, newEnabled);
+    } catch (err) {
+      console.warn('Plugin preference persistence note:', err);
+    }
   };
 
   const toggleActivePluginId = (id: string) => {
@@ -266,23 +403,44 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
   };
 
-  const addCustomTool = (data: CustomToolFormData) => {
-    const newTool: Plugin = {
-      id: `custom-${Date.now()}`,
-      name: data.name,
-      description: data.description,
-      icon: data.icon || '⚡',
-      category: 'custom',
-      enabled: true,
-      isCustom: true,
-      author: 'User Defined',
-      version: '1.0.0',
-      endpointUrl: data.endpointUrl,
-      method: data.method
-    };
-    setPlugins(prev => [...prev, newTool]);
-    setActivePluginIds(prev => [...prev, newTool.id]);
+  const addCustomTool = async (data: CustomToolFormData) => {
+    try {
+      const res = await apiClient.plugins.createCustom(data);
+      if (res.plugin) {
+        setPlugins(prev => [res.plugin, ...prev]);
+        setActivePluginIds(prev => [...prev, res.plugin.id]);
+      }
+    } catch (err) {
+      console.warn('Register custom plugin note:', err);
+      const newTool: Plugin = {
+        id: `custom-${Date.now()}`,
+        name: data.name,
+        description: data.description,
+        icon: data.icon || '⚡',
+        category: 'custom',
+        enabled: true,
+        isAvailable: true,
+        statusMessage: 'Custom Webhook Active',
+        isCustom: true,
+        author: 'User Defined',
+        version: '1.0.0',
+        endpointUrl: data.endpointUrl,
+        method: data.method
+      };
+      setPlugins(prev => [newTool, ...prev]);
+      setActivePluginIds(prev => [...prev, newTool.id]);
+    }
     setIsCustomToolModalOpen(false);
+  };
+
+  const deleteCustomTool = async (id: string) => {
+    setPlugins(prev => prev.filter(p => p.id !== id));
+    setActivePluginIds(prev => prev.filter(item => item !== id));
+    try {
+      await apiClient.plugins.deleteCustom(id);
+    } catch (err) {
+      console.warn('Delete custom tool note:', err);
+    }
   };
 
   const createNewChat = () => {
@@ -290,9 +448,38 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSidebarOpen(false);
   };
 
-  const deleteChat = (id: string) => {
-    setChats(prev => prev.filter(c => c.id !== id));
-    if (activeChatId === id) setActiveChatId(null);
+  const deleteChat = async (id: string) => {
+    setChats(prev => {
+      const updated = prev.filter(c => c.id !== id);
+      if (userSession.id) {
+        localStorage.setItem(`clever_chats_${userSession.id}`, JSON.stringify(updated));
+      }
+      return updated;
+    });
+
+    if (activeChatId === id) {
+      setActiveChatId(null);
+    }
+
+    try {
+      await apiClient.conversations.delete(id);
+    } catch (err) {
+      console.warn('Backend chat delete note:', err);
+    }
+  };
+
+  const clearAllChats = async () => {
+    setChats([]);
+    setActiveChatId(null);
+    if (userSession.id) {
+      localStorage.removeItem(`clever_chats_${userSession.id}`);
+    }
+
+    try {
+      await apiClient.conversations.clearAll();
+    } catch (err) {
+      console.warn('Backend clear all chats note:', err);
+    }
   };
 
   // Message Sending via Central apiClient
@@ -340,29 +527,71 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsGenerating(true);
 
     try {
+      let documentIds: string[] | undefined = undefined;
+
+      if (attachedFile) {
+        try {
+          const docRes = await apiClient.documents.upload(attachedFile);
+          if (docRes.document?.id) {
+            documentIds = [docRes.document.id];
+          }
+        } catch (docErr) {
+          console.warn('Document upload error:', docErr);
+        }
+      }
+
       const data = await apiClient.chat.sendMessage({
-        message: text,
+        message: text || `Summarize attached document ${attachedFile?.name || ''}`,
         threadId: currentThreadId,
         model: appConfig.ai.defaultModel,
-        activePlugins: activePluginIds
+        activePlugins: activePluginIds,
+        documentIds
       });
 
       const aiMsg: Message = {
         id: `msg-ai-${Date.now()}`,
         sender: 'ai',
         text: data.reply || 'Response received from AI server.',
+        toolResults: data.toolResults,
+        isStreaming: true,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+
+      const finalThreadId = data.threadId || currentThreadId;
+      if (currentThreadId !== finalThreadId) {
+        setActiveChatId(finalThreadId);
+      }
+
+      setChats(prev =>
+        prev.map(c =>
+          c.id === currentThreadId
+            ? { ...c, id: finalThreadId, messages: [...c.messages, aiMsg], updatedAt: new Date().toISOString() }
+            : c
+        )
+      );
+    } catch (err: any) {
+      console.warn('API communication error:', err);
+      const errMsg = err.message || '';
+      const isDown = errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError') || errMsg.includes('ECONNREFUSED') || errMsg.includes('not reachable') || errMsg.includes('502') || errMsg.includes('503');
+
+      const friendlyText = isDown
+        ? `⚠️ **Oops! Backend Server Not Found.**\n\nUnable to establish a connection with the backend server at \`${appConfig.backend.endpointUrl || 'http://localhost:8000'}\`.\n\nPlease check that the backend service is running and try again.`
+        : `⚠️ **Oops! Something went wrong.**\n\n${errMsg || 'Unable to process your request at this time. Please try again.'}`;
+
+      const errorAiMsg: Message = {
+        id: `msg-ai-err-${Date.now()}`,
+        sender: 'ai',
+        text: friendlyText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
 
       setChats(prev =>
         prev.map(c =>
           c.id === currentThreadId
-            ? { ...c, messages: [...c.messages, aiMsg], updatedAt: new Date().toISOString() }
+            ? { ...c, messages: [...c.messages, errorAiMsg], updatedAt: new Date().toISOString() }
             : c
         )
       );
-    } catch (err: any) {
-      console.warn('API fetch note:', err);
     } finally {
       setIsGenerating(false);
     }
@@ -385,13 +614,18 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setActiveChatId,
         createNewChat,
         deleteChat,
+        clearAllChats,
+        loadConversations,
         searchQuery,
         setSearchQuery,
         selectedCategory,
         setSelectedCategory,
         plugins,
+        pluginCategories,
         togglePlugin,
         addCustomTool,
+        deleteCustomTool,
+        loadPlugins,
         activePluginIds,
         toggleActivePluginId,
         isGenerating,

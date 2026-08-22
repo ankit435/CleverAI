@@ -20,10 +20,12 @@ model User {
   updatedAt    DateTime     @default(now()) @updatedAt @map("updated_at")
   lastLoginAt  DateTime?    @map("last_login_at")
 
-  sessions     Session[]
-  threads      ChatThread[]
-  agentRuns    AgentRun[]
-  documents    Document[]
+  sessions          Session[]
+  threads           ChatThread[]
+  agentRuns         AgentRun[]
+  documents         Document[]
+  customPlugins     CustomPlugin[]
+  pluginPreferences UserPluginPreference[]
 
   @@map("users")
 }
@@ -158,3 +160,39 @@ model ToolCall {
   @@index([agentRunId])
   @@map("tool_calls")
 }
+
+model CustomPlugin {
+  id          String   @id @default(uuid())
+  userId      Int      @map("user_id")
+  name        String
+  description String   @db.Text
+  icon        String   @default("⚡")
+  category    String   @default("custom")
+  endpointUrl String   @map("endpoint_url")
+  method      String   @default("POST")
+  params      Json?
+  isEnabled   Boolean  @default(true) @map("is_enabled")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("custom_plugins")
+}
+
+model UserPluginPreference {
+  id          String   @id @default(uuid())
+  userId      Int      @map("user_id")
+  pluginId    String   @map("plugin_id")
+  isEnabled   Boolean  @default(true) @map("is_enabled")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, pluginId])
+  @@index([userId])
+  @@map("user_plugin_preferences")
+}
+

@@ -36,9 +36,9 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
     plan: 'Free'
   },
   ai: {
-    defaultModel: 'meta/llama-3.1-70b-instruct',
+    defaultModel: 'nvidia/nemotron-3.5-lightning-30b-a3b',
     systemPrompt: 'You are a helpful AI workspace assistant equipped with multi-tool capabilities.',
-    temperature: 0.7,
+    temperature: 1.0,
     apiBaseUrl: 'https://api.openai.com/v1',
     apiKey: ''
   },

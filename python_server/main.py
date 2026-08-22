@@ -1,7 +1,7 @@
 import os
 import time
 from typing import List, Optional, Any, Dict
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -12,6 +12,8 @@ load_dotenv()
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage
+
+INTERNAL_SERVICE_KEY = os.environ.get("INTERNAL_SERVICE_KEY", "clever-internal-agent-secret-key-prod-2026")
 
 app = FastAPI(
     title="Clever AI LangChain NVIDIA Python Server",
@@ -27,6 +29,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def enforce_internal_service_authentication(request: Request, call_next):
+    # Public endpoints: health probe & OpenAPI docs
+    if request.url.path in ["/health", "/docs", "/openapi.json", "/redoc"]:
+        return await call_next(request)
+    
+    # Verify internal service key on all API routes
+    auth_header = request.headers.get("x-internal-service-key") or request.headers.get("authorization", "").replace("Bearer ", "")
+    if auth_header != INTERNAL_SERVICE_KEY:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Unauthorized: Direct access forbidden without valid internal service credentials."}
+        )
+    
+    return await call_next(request)
 
 # Define LangChain Tools matching agent capability
 @tool

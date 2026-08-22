@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { useChatContext } from '../context/ChatContext';
-import { X, Settings, User, Cpu, Server, Save, RotateCcw } from 'lucide-react';
+import { X, Settings, User, Server, Save, RotateCcw } from 'lucide-react';
 
 export const SettingsModal: React.FC = () => {
   const { isSettingsModalOpen, setIsSettingsModalOpen, appConfig, updateAppConfig, resetAppConfig } = useChatContext();
-  const [activeTab, setActiveTab] = useState<'profile' | 'ai' | 'backend'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'backend'>('profile');
   const [formData, setFormData] = useState(appConfig);
 
   if (!isSettingsModalOpen) return null;
@@ -43,15 +43,6 @@ export const SettingsModal: React.FC = () => {
           >
             <User size={15} />
             <span>User & Brand</span>
-          </button>
-          <button
-            type="button"
-            className={`nav-item ${activeTab === 'ai' ? 'active' : ''}`}
-            style={{ width: 'auto', borderRadius: '0', borderBottom: activeTab === 'ai' ? '2px solid var(--primary)' : 'none' }}
-            onClick={() => setActiveTab('ai')}
-          >
-            <Cpu size={15} />
-            <span>AI Model</span>
           </button>
           <button
             type="button"
@@ -127,57 +118,7 @@ export const SettingsModal: React.FC = () => {
             </div>
           )}
 
-          {/* Tab 2: AI Model Settings */}
-          {activeTab === 'ai' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>Default AI Model</label>
-                <select
-                  style={{
-                    width: '100%',
-                    marginTop: '4px',
-                    padding: '8px',
-                    borderRadius: '8px',
-                    border: '1px solid var(--border-light)',
-                    backgroundColor: 'var(--bg-input)',
-                    color: 'var(--text-main)'
-                  }}
-                  value={formData.ai.defaultModel}
-                  onChange={e => setFormData({ ...formData, ai: { ...formData.ai, defaultModel: e.target.value } })}
-                >
-                  <option value="gpt-4o">GPT-4o (Omni High Reasoning)</option>
-                  <option value="gpt-4o-mini">GPT-4o-mini (Fast & Lightweight)</option>
-                  <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
-                  <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-                  <option value="local-ollama">Local Ollama / Llama3</option>
-                </select>
-              </div>
-
-              <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>System Prompt</label>
-                <textarea
-                  rows={3}
-                  className="search-input-wrapper prompt-textarea"
-                  style={{ width: '100%', marginTop: '4px', padding: '8px 12px', fontSize: '13px' }}
-                  value={formData.ai.systemPrompt}
-                  onChange={e => setFormData({ ...formData, ai: { ...formData.ai, systemPrompt: e.target.value } })}
-                />
-              </div>
-
-              <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)' }}>API Base URL</label>
-                <input
-                  type="text"
-                  className="search-input-wrapper"
-                  style={{ width: '100%', marginTop: '4px', padding: '8px 12px' }}
-                  value={formData.ai.apiBaseUrl}
-                  onChange={e => setFormData({ ...formData, ai: { ...formData.ai, apiBaseUrl: e.target.value } })}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Tab 3: Backend Settings */}
+          {/* Tab 2: Backend Settings */}
           {activeTab === 'backend' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
@@ -195,10 +136,8 @@ export const SettingsModal: React.FC = () => {
                   value={formData.backend.provider}
                   onChange={e => setFormData({ ...formData, backend: { ...formData.backend, provider: e.target.value as any } })}
                 >
-                  <option value="local-mock">Simulated In-Browser Multi-Tool Runner (Zero Setup)</option>
+                  <option value="express">Node.js Express + Python LangChain AI Backend</option>
                   <option value="fastapi">Python FastAPI + LangChain Backend</option>
-                  <option value="express">Node.js Express + Vercel AI SDK Backend</option>
-                  <option value="openai-direct">Direct OpenAI API Integration</option>
                   <option value="custom-webhook">Custom Webhook REST Endpoint</option>
                 </select>
               </div>

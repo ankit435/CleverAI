@@ -111,9 +111,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isProtectedGate = false })
     setError('');
 
     try {
+      const emailInput = email.trim() || `google_user_${Date.now()}@gmail.com`;
+      const nameInput = name.trim() || emailInput.split('@')[0];
       const data = await apiClient.auth.google({
-        name: 'Ankit',
-        email: 'ankitkumar700413@gmail.com',
+        name: nameInput,
+        email: emailInput,
         avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80',
         googleId: `google-sso-${Date.now()}`
       });
@@ -280,7 +282,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isProtectedGate = false })
                     <input
                       type="email"
                       required
-                      placeholder="ankitkumar700413@gmail.com"
+                      placeholder="name@example.com"
                       className="search-input"
                       value={email}
                       onChange={e => setEmail(e.target.value)}

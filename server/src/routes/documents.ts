@@ -5,7 +5,7 @@ import { authenticateToken, AuthenticatedRequest } from '../middleware/auth.js';
 
 export const documentsRouter = Router();
 
-const PYTHON_SERVER_URL = process.env.PYTHON_SERVER_URL || 'http://localhost:8001';
+const PYTHON_SERVER_URL = process.env.PYTHON_SERVER_URL || 'http://127.0.0.1:8001';
 const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = new Set(['.pdf', '.docx', '.pptx', '.xlsx', '.xls', '.csv', '.txt', '.md', '.html', '.htm', '.json', '.xml']);
 
@@ -34,9 +34,17 @@ documentsRouter.post('/upload', raw({ type: 'application/octet-stream', limit: M
 
   try {
     const form = new FormData();
-    form.append('file', new Blob([file], { type: mimeType }), filename);
+    const blob = new Blob([new Uint8Array(file)], { type: mimeType });
+    form.append('file', blob, filename);
+
+    const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY || 'clever-internal-agent-secret-key-prod-2026';
     const conversion = await fetch(`${PYTHON_SERVER_URL}/api/v1/documents/convert`, {
-      method: 'POST', body: form, signal: AbortSignal.timeout(120_000)
+      method: 'POST',
+      body: form,
+      headers: {
+        'x-internal-service-key': INTERNAL_SERVICE_KEY
+      },
+      signal: AbortSignal.timeout(120_000)
     });
     if (!conversion.ok) {
       const body = await conversion.text();

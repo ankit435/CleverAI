@@ -243,6 +243,22 @@ conversationsRouter.delete('/:id', async (req: AuthenticatedRequest, res: Respon
   }
 });
 
+// 5b. DELETE /api/v1/conversations - Delete all conversations for the authenticated user
+conversationsRouter.delete('/', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = Number(req.user!.id);
+
+    const deleted = await prisma.chatThread.deleteMany({
+      where: { userId }
+    });
+
+    return res.json({ message: `Successfully deleted ${deleted.count} conversations` });
+  } catch (err: any) {
+    console.error('Delete All Conversations Error:', err);
+    return res.status(500).json({ error: 'Failed to delete conversations' });
+  }
+});
+
 // 6. GET /api/v1/conversations/:id/messages - Paginated messages for a conversation
 conversationsRouter.get('/:id/messages', async (req: AuthenticatedRequest, res: Response) => {
   try {

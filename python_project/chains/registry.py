@@ -15,7 +15,7 @@ class DynamicChainRegistry:
     def _register_default_prompts(self):
         # 1. Stateful Chat Prompt with Conversation Context
         chat_prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful, highly intelligent AI assistant.\n\nConversation History:\n{chat_history}\n\nDocument context (may be empty):\n{document_context}\n\nUse document context only when relevant. Do not invent facts. When using it, cite the source exactly as [filename — heading]."),
+            ("system", "You are an intelligent, helpful, and friendly AI assistant. You have direct access to analyze and reference the attached document content provided below. Always answer questions, extract details, and summarize based on the attached document content thoroughly and in well-formatted Markdown.\n\nAttached Document Content:\n{document_context}\n\nConversation History:\n{chat_history}"),
             ("human", "{user_input}")
         ])
         
@@ -39,16 +39,30 @@ class DynamicChainRegistry:
         """Dynamically register a new prompt template at runtime."""
         self._prompts[name] = prompt_template
 
-    def execute_dynamic_chain(self, user_input: str, thread_id: Optional[str] = None, chain_name: str = "default_chat", model_name: Optional[str] = None, document_context: Optional[list[Dict[str, Any]]] = None) -> str:
+    def execute_dynamic_chain(
+        self,
+        user_input: str,
+        thread_id: Optional[str] = None,
+        chain_name: str = "default_chat",
+        model_name: Optional[str] = None,
+        document_context: Optional[list[Dict[str, Any]]] = None,
+        history: Optional[list[Dict[str, str]]] = None
+    ) -> str:
         """
         Executes a dynamic pipeline:
-        1. Fetch conversation history from memory_manager for thread_id
+        1. Fetch or parse conversation history from database or memory_manager
         2. Format prompt template
-        3. Instantiates dynamic chat model (ChatNVIDIA, OpenAI, Claude, Gemini)
+        3. Instantiates dynamic chat model (Nemotron, Llama, OpenAI, Claude, Gemini)
         4. Invokes model pipeline and updates session memory!
         """
-        # Fetch formatted chat history
-        chat_history = memory_manager.get_formatted_context(thread_id or "default")
+        if history and len(history) > 0:
+            formatted_lines = []
+            for msg in history[-20:]:
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                formatted_lines.append(f"{role}: {msg.get('content', '')}")
+            chat_history = "\n".join(formatted_lines)
+        else:
+            chat_history = memory_manager.get_formatted_context(thread_id or "default")
 
         # Get prompt template
         prompt = self._prompts.get(chain_name, self._prompts["default_chat"])
@@ -63,12 +77,19 @@ class DynamicChainRegistry:
         if thread_id:
             memory_manager.add_user_message(thread_id, user_input)
 
-        # Run chain
-        response_text = chain.invoke({
+        # Run chain using stream aggregator for fast responsive token capture
+        chunks = []
+        for chunk in chain.stream({
             "chat_history": chat_history,
             "user_input": user_input,
             "document_context": self._format_document_context(document_context or [])
-        })
+        }):
+            if chunk:
+                chunks.append(chunk)
+
+        response_text = "".join(chunks).strip()
+        if not response_text:
+            response_text = "I have processed your request."
 
         # Update memory with AI output
         if thread_id:

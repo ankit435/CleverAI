@@ -1,25 +1,36 @@
 import os
+import warnings
 from typing import Optional
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from config import settings
 
-def get_chat_model(model_name: Optional[str] = None, temperature: float = 0.7, max_tokens: int = 4096):
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain_nvidia_ai_endpoints")
+
+def get_chat_model(model_name: Optional[str] = None, temperature: float = 1.0, max_tokens: int = 4096):
     """
     Dynamic Multi-Model Factory Function.
-    Supports ChatNVIDIA, OpenAI, Anthropic, and Google Gemini models at runtime.
+    Supports ChatNVIDIA (Nemotron, Llama), OpenAI, Anthropic, and Google Gemini models at runtime.
     """
     target_model = model_name or settings.default_model
 
     # 1. NVIDIA AI Models
-    if target_model.startswith("meta/") or target_model.startswith("nvidia/") or target_model.startswith("mistralai/") or "nvidia" in target_model:
+    if target_model.startswith("meta/") or target_model.startswith("nvidia/") or target_model.startswith("mistralai/") or "nvidia" in target_model or "nemotron" in target_model:
         api_key = settings.nvidia_api_key
         if not api_key:
             raise ValueError("NVIDIA_API_KEY is not set in configuration")
+        
+        model_kwargs = {}
+        if "nemotron" in target_model:
+            model_kwargs["reasoning_budget"] = 2048
+            model_kwargs["chat_template_kwargs"] = {"enable_thinking": True}
+
         return ChatNVIDIA(
             model=target_model,
             api_key=api_key,
             temperature=temperature,
+            top_p=0.95,
             max_tokens=max_tokens,
+            model_kwargs=model_kwargs
         )
 
     # 2. OpenAI Models (gpt-4o, gpt-4o-mini)

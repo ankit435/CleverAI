@@ -6,6 +6,7 @@ import { chatRouter } from './routes/chat.js';
 import { authRouter } from './routes/auth.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { documentsRouter } from './routes/documents.js';
+import { pluginsRouter } from './routes/plugins.js';
 import { initDb } from './config/initDb.js';
 import { prisma } from './config/prisma.js';
 
@@ -86,6 +87,9 @@ app.use('/api/v1/conversations', conversationsRouter);
 
 // Authenticated document conversion and storage (MarkItDown runs in the Python service)
 app.use('/api/v1/documents', documentsRouter);
+
+// Dynamic Plugins & Tools Registry Route
+app.use('/api/v1/plugins', pluginsRouter);
 
 // Chat & Multi-Tool Agent Execution Route
 app.use('/api/v1/chat', chatRouter);
