@@ -27,21 +27,12 @@ function terms(text: string): Set<string> {
 }
 
 function selectDocumentContext(documents: Array<{ filename: string; chunks: Array<{ heading: string | null; content: string }> }>, message: string): DocumentContext[] {
-  if (!documents || documents.length === 0) return [];
   const queryTerms = terms(message);
-  const allChunks = documents.flatMap(document => document.chunks.map(chunk => ({
-    filename: document.filename,
-    heading: chunk.heading,
-    content: chunk.content,
-    score: queryTerms.size > 0 ? [...queryTerms].filter(word => `${chunk.heading || ''} ${chunk.content}`.toLowerCase().includes(word)).length : 1
-  })));
-
-  const hasMatches = allChunks.some(c => c.score > 0);
-  if (hasMatches && allChunks.length > 15) {
-    return allChunks.sort((a, b) => b.score - a.score).slice(0, 15).map(({ filename, heading, content }) => ({ filename, heading, content }));
-  }
-
-  return allChunks.slice(0, 15).map(({ filename, heading, content }) => ({ filename, heading, content }));
+  return documents.flatMap(document => document.chunks.map(chunk => ({
+    filename: document.filename, heading: chunk.heading, content: chunk.content,
+    score: [...queryTerms].filter(word => `${chunk.heading || ''} ${chunk.content}`.toLowerCase().includes(word)).length
+  }))).sort((a, b) => b.score - a.score).slice(0, 8)
+    .map(({ filename, heading, content }) => ({ filename, heading, content }));
 }
 
 // GET /api/v1/chat/history - Backward-compatible history endpoint, strictly scoped to user
@@ -195,7 +186,7 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
           documentContext,
           history: historyList
         }),
-        signal: AbortSignal.timeout(process.env.NODE_ENV === 'test' ? 800 : (Number(process.env.PYTHON_TIMEOUT_MS) || 120_000))
+        signal: AbortSignal.timeout(process.env.NODE_ENV === 'test' ? 800 : 25000)
       });
 
       if (pyResponse.ok) {
@@ -326,15 +317,7 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
           // Try NVIDIA NIM with valid API Key
           if (!llmGenerated && nvidiaKey) {
             try {
-              const nvidiaModel = model && model !== 'local-ollama' ? model : (process.env.DEFAULT_MODEL || 'nvidia/nemotron-3.5-lightning-30b-a3b');
-              
-              let docContextSection = '';
-              if (documentContext && documentContext.length > 0) {
-                docContextSection = '\n\n=== ATTACHED DOCUMENT CONTENT ===\n' + documentContext.map((c, i) => `[Document Section ${i + 1}: ${c.filename}${c.heading ? ` - ${c.heading}` : ''}]\n${c.content}`).join('\n\n') + '\n=== END ATTACHED DOCUMENT CONTENT ===\n';
-              }
-
-              const systemInstruction = `You are an intelligent, helpful, concise AI assistant in the Clever AI workspace. You have direct access to the attached document content provided below. Always use the attached document content to answer user questions, summarize, extract information, and analyze thoroughly in clean Markdown.\n${docContextSection}`;
-
+              const nvidiaModel = model && model !== 'local-ollama' ? model : 'meta/llama-3.1-70b-instruct';
               const nimRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
                 method: 'POST',
                 headers: {
@@ -346,7 +329,7 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
                   messages: [
                     {
                       role: 'system',
-                      content: systemInstruction
+                      content: 'You are an intelligent, helpful, concise AI assistant in the Clever AI workspace. Provide accurate, well-formatted markdown responses with code blocks where appropriate.'
                     },
                     ...recentMessages.map(m => ({
                       role: m.sender === 'user' ? 'user' : 'assistant',
@@ -355,9 +338,9 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
                     { role: 'user', content: message }
                   ],
                   temperature: 0.6,
-                  max_tokens: 2048
+                  max_tokens: 1024
                 }),
-                signal: AbortSignal.timeout(process.env.NODE_ENV === 'test' ? 800 : (Number(process.env.NIM_TIMEOUT_MS) || 120_000))
+                signal: AbortSignal.timeout(process.env.NODE_ENV === 'test' ? 800 : 20000)
               });
 
               if (nimRes.ok) {
@@ -388,10 +371,8 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
             } else if (lowerPrompt.startsWith('what is') || lowerPrompt.startsWith('how to') || lowerPrompt.startsWith('explain')) {
               const topic = message.replace(/^(what is|how to|explain)\s*/i, '').trim();
               replyText = `### Explanation: ${topic || 'Your Query'}\n\nHere is a comprehensive overview of **${topic || 'this subject'}**:\n\n1. **Core Concept**: Fundamental component designed to deliver reliable, scalable results.\n2. **Best Practices**: Maintain modular code architecture and strict type definitions.\n3. **Application**: Extensively used across modern software architectures.`;
-            } else if (lowerPrompt.includes('search') || lowerPrompt.includes('weather') || lowerPrompt.includes('news') || lowerPrompt.includes('web')) {
-              replyText = `🌐 **Web Search Active**\n\nI can help you search the web for real-time information, weather forecasts, technical documentation, and news. Please provide your specific search query (for example: *"Weather forecast in New York for today"* or *"Latest developments in AI models"*).`;
             } else {
-              replyText = `Hello! How can I assist you with your request? You can ask me questions, upload documents for analysis, write and execute code in the sandbox, generate AI images, or search the web.`;
+              replyText = `I understand: "${message}". How can I best assist you with this?`;
             }
           }
         }

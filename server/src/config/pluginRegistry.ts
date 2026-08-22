@@ -17,19 +17,6 @@ export interface SystemPluginDefinition {
 
 export const SYSTEM_PLUGINS: SystemPluginDefinition[] = [
   {
-    id: 'browser-agent',
-    name: 'Live Web Browser Agent',
-    description: 'Navigates web URLs, reads live websites, documentation, articles, and extracts real-time page content.',
-    icon: '🧭',
-    category: 'search',
-    isEnabledByDefault: true,
-    author: 'Clever AI',
-    version: '1.5.0',
-    checkAvailability: async () => {
-      return { isAvailable: true, statusMessage: 'Browser Engine Active' };
-    }
-  },
-  {
     id: 'web-search',
     name: 'Web Search Engine',
     description: 'Searches live Google, DuckDuckGo & technical knowledge bases for real-time verified answers.',

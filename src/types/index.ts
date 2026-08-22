@@ -37,7 +37,7 @@ export interface ToolExecutionResult {
   status: 'running' | 'success' | 'error';
   executionTimeMs?: number;
   data?: {
-    type: 'image' | 'code' | 'search' | 'chart' | 'document' | 'raw' | 'custom_tool' | 'calculation' | 'browser_page';
+    type: 'image' | 'code' | 'search' | 'chart' | 'document' | 'raw';
     imageUrl?: string;
     imagePrompt?: string;
     codeSnippet?: string;
@@ -48,16 +48,6 @@ export interface ToolExecutionResult {
     documentSummary?: string;
     documentFilename?: string;
     rawContent?: string;
-    toolName?: string;
-    description?: string;
-    expression?: string;
-    result?: any;
-    title?: string;
-    url?: string;
-    content?: string;
-    action?: string;
-    links?: Array<{ text: string; url: string }>;
-    screenshotUrl?: string;
   };
 }
 

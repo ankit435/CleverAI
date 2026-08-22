@@ -1,19 +1,15 @@
-"""Document conversion and semantic Markdown chunking powered by Microsoft MarkItDown."""
+"""Safe local-file conversion and Markdown chunking for chat retrieval."""
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Optional, Tuple
 import re
 
 from fastapi import HTTPException, UploadFile
-from markitdown import MarkItDown
 
 ALLOWED_SUFFIXES = {'.pdf', '.docx', '.pptx', '.xlsx', '.xls', '.csv', '.txt', '.md', '.html', '.htm', '.json', '.xml'}
 MAX_MARKDOWN_CHARS = 2_000_000
 CHUNK_SIZE = 1_500
 CHUNK_OVERLAP = 200
-
-# Initialize Microsoft MarkItDown converter instance
-markitdown_engine = MarkItDown(enable_plugins=False)
 
 def _safe_suffix(filename: Optional[str]) -> str:
     if not filename:
@@ -51,46 +47,35 @@ def chunk_markdown(markdown: str) -> List[Dict[str, Any]]:
     return chunks
 
 async def convert_upload(upload: UploadFile) -> Dict[str, Any]:
-    """Convert any supported document file to clean Markdown using Microsoft MarkItDown."""
     suffix = _safe_suffix(upload.filename)
     raw_bytes = await upload.read()
 
     markdown = ""
-    temporary_path: Optional[Path] = None
-
     try:
+        from markitdown import MarkItDown
         with NamedTemporaryFile(suffix=suffix, delete=False) as temp:
             temporary_path = Path(temp.name)
             temp.write(raw_bytes)
-        
-        # Primary conversion: Microsoft MarkItDown engine
-        conversion_result = markitdown_engine.convert(str(temporary_path))
-        if conversion_result and hasattr(conversion_result, 'text_content'):
-            markdown = conversion_result.text_content.strip()
-        elif conversion_result:
-            markdown = str(conversion_result).strip()
+        try:
+            res = MarkItDown(enable_plugins=False).convert_local(temporary_path)
+            markdown = (getattr(res, 'text_content', '') or str(res)).strip()
+        finally:
+            temporary_path.unlink(missing_ok=True)
     except Exception as exc:
-        # Fallback for plain text formats (.txt, .md, .csv, .json, .xml, .html)
         if suffix in {'.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm'}:
             try:
                 markdown = raw_bytes.decode('utf-8', errors='replace').strip()
             except Exception:
-                raise HTTPException(status_code=422, detail=f'Microsoft MarkItDown conversion error: {str(exc)[:300]}')
-        else:
-            raise HTTPException(status_code=422, detail=f'Microsoft MarkItDown conversion error: {str(exc)[:300]}')
-    finally:
-        if temporary_path and temporary_path.exists():
-            temporary_path.unlink(missing_ok=True)
-
-    if not markdown and suffix in {'.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm'}:
-        markdown = raw_bytes.decode('utf-8', errors='replace').strip()
+                pass
 
     if not markdown:
-        raise HTTPException(status_code=422, detail='No readable text was extracted by Microsoft MarkItDown.')
-    if len(markdown) > MAX_MARKDOWN_CHARS:
-        raise HTTPException(status_code=413, detail='Extracted document Markdown exceeds size limits.')
+        try:
+            markdown = raw_bytes.decode('utf-8', errors='replace').strip()
+        except Exception:
+            pass
 
-    return {
-        'markdown': markdown,
-        'chunks': chunk_markdown(markdown)
-    }
+    if not markdown:
+        raise HTTPException(status_code=422, detail='No readable text was extracted from this document.')
+    if len(markdown) > MAX_MARKDOWN_CHARS:
+        raise HTTPException(status_code=413, detail='Extracted document text is too large.')
+    return {'markdown': markdown, 'chunks': chunk_markdown(markdown)}

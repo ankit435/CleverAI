@@ -7,5 +7,3 @@ langchain-core>=0.3.0
 langchain-nvidia-ai-endpoints>=0.3.0
 markitdown[pdf,docx,pptx,xlsx]>=0.1.4
 python-multipart>=0.0.9
-playwright>=1.40.0
-httpx>=0.25.0

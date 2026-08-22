@@ -69,16 +69,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Config state
   const [appConfig, setAppConfig] = useState<AppConfig>(() => {
     const saved = localStorage.getItem('clever_app_config');
-    if (saved) {
-      try {
-        const parsed: AppConfig = JSON.parse(saved);
-        if (!parsed.ai?.defaultModel || parsed.ai.defaultModel === 'local-ollama') {
-          parsed.ai = { ...parsed.ai, defaultModel: DEFAULT_APP_CONFIG.ai.defaultModel };
-        }
-        return parsed;
-      } catch {}
-    }
-    return DEFAULT_APP_CONFIG;
+    return saved ? JSON.parse(saved) : DEFAULT_APP_CONFIG;
   });
 
   useEffect(() => {
