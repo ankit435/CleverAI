@@ -68,6 +68,10 @@ export interface Message {
   timestamp: string;
   toolResults?: ToolExecutionResult[];
   isStreaming?: boolean;
+  /** Live progress label shown while an async SSE-tracked run is still in flight (e.g. "Executing browser_act"). */
+  statusText?: string;
+  /** Server-correlated agent run ID; present while a message is backed by an in-flight async run (used for cancel). */
+  runId?: string;
 }
 
 export interface ChatThread {
@@ -111,26 +115,19 @@ export interface BrowserTabItem {
 }
 
 export interface BrowserInteractiveElement {
-  id: number;
-  tag: string;
-  role?: string;
-  text: string;
-  selector: string;
-  placeholder?: string;
-  value?: string;
-  inputType?: string;
-  isClickable: boolean;
-  isInput: boolean;
+  description: string;
+  method: string;
 }
 
-export interface BrowserSnapshotView {
-  title: string;
-  url: string;
-  activeTabId: string;
-  timestamp: string;
-  elements: BrowserInteractiveElement[];
-  visibleText: string;
-  formattedSnapshot: string;
+export interface BrowserActionResult {
+  action: string;
+  status: 'success' | 'error' | 'confirmation_required';
+  message: string;
+  durationMs?: number;
+  currentUrl?: string;
+  currentTitle?: string;
+  data?: Record<string, any> | null;
+  error?: string | null;
 }
 
 export interface BrowserSessionStatus {

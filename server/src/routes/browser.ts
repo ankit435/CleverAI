@@ -25,17 +25,23 @@ const openTabSchema = z.object({
   url: z.string().default('about:blank')
 });
 
-const actionSchema = z.object({
-  action: z.enum(['click', 'type', 'navigate', 'scroll', 'press_key', 'screenshot', 'go_back', 'go_forward', 'snapshot']),
-  selector: z.string().optional(),
-  textInput: z.string().optional(),
-  url: z.string().optional(),
-  elementId: z.number().int().optional(),
-  key: z.string().optional(),
-  direction: z.enum(['up', 'down', 'top', 'bottom']).default('down'),
-  pixels: z.number().int().default(500),
-  tabId: z.string().optional(),
+// Stagehand instruction-based schemas (no selectors/element IDs — Stagehand's
+// AI resolves targets from plain natural-language instructions).
+const navigateSchema = z.object({
+  url: z.string().min(1, 'url is required')
+});
+
+const actSchema = z.object({
+  instruction: z.string().min(1, 'instruction is required'),
   confirmed: z.boolean().default(false)
+});
+
+const observeSchema = z.object({
+  instruction: z.string().optional()
+});
+
+const extractSchema = z.object({
+  instruction: z.string().min(1, 'instruction is required')
 });
 
 const confirmSchema = z.object({
@@ -206,51 +212,50 @@ browserRouter.post('/tabs/close', async (req: AuthenticatedRequest, res: Respons
   }
 });
 
-// 8. POST /api/v1/browser/snapshot
-browserRouter.post('/snapshot', async (req: AuthenticatedRequest, res: Response) => {
+// 8. POST /api/v1/browser/navigate
+browserRouter.post('/navigate', async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const { url } = navigateSchema.parse(req.body);
     const userId = Number(req.user!.id);
-    const tabId = req.body?.tabId;
 
-    const pyData = await callPythonBrowserService('/api/v1/browser/snapshot', 'POST', {
-      tab_id: tabId,
-      userId
-    });
+    const pyData = await callPythonBrowserService('/api/v1/browser/navigate', 'POST', { url, userId });
+
+    await prisma.browserActionAudit.create({
+      data: {
+        userId,
+        action: 'navigate',
+        targetUrl: url,
+        status: pyData.status || 'success',
+        durationMs: pyData.duration_ms || 0,
+        error: pyData.error || null
+      }
+    }).catch(() => {});
+
     res.json(pyData);
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to capture snapshot' });
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: err.errors[0]?.message || 'Validation error' });
+    }
+    res.status(500).json({ error: err.message || 'Failed to navigate' });
   }
 });
 
-// 9. POST /api/v1/browser/action
-browserRouter.post('/action', async (req: AuthenticatedRequest, res: Response) => {
+// 9. POST /api/v1/browser/act — Stagehand natural-language action (click/type/scroll/etc.)
+browserRouter.post('/act', async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const parsed = actionSchema.parse(req.body);
+    const { instruction, confirmed } = actSchema.parse(req.body);
     const userId = Number(req.user!.id);
 
-    const pyData = await callPythonBrowserService('/api/v1/browser/action', 'POST', {
-      action: parsed.action,
-      selector: parsed.selector,
-      text_input: parsed.textInput,
-      url: parsed.url,
-      element_id: parsed.elementId,
-      key: parsed.key,
-      direction: parsed.direction,
-      pixels: parsed.pixels,
-      tab_id: parsed.tabId,
-      confirmed: parsed.confirmed,
-      userId
-    });
+    const pyData = await callPythonBrowserService('/api/v1/browser/act', 'POST', { instruction, confirmed, userId });
 
     // Record Action Audit Log in PostgreSQL
     await prisma.browserActionAudit.create({
       data: {
         userId,
-        action: parsed.action,
-        selector: parsed.selector,
-        textInput: parsed.textInput,
-        targetUrl: parsed.url,
+        action: 'act',
+        textInput: instruction,
         status: pyData.status || 'success',
+        riskLevel: pyData.data?.risk_level || 'low',
         durationMs: pyData.duration_ms || 0,
         error: pyData.error || null
       }
@@ -265,7 +270,39 @@ browserRouter.post('/action', async (req: AuthenticatedRequest, res: Response) =
   }
 });
 
-// 10. POST /api/v1/browser/confirm
+// 10. POST /api/v1/browser/observe — discover actionable elements on the current page
+browserRouter.post('/observe', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { instruction } = observeSchema.parse(req.body);
+    const userId = Number(req.user!.id);
+
+    const pyData = await callPythonBrowserService('/api/v1/browser/observe', 'POST', { instruction, userId });
+    res.json(pyData);
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: err.errors[0]?.message || 'Validation error' });
+    }
+    res.status(500).json({ error: err.message || 'Failed to observe page' });
+  }
+});
+
+// 11. POST /api/v1/browser/extract — pull structured/free-text data from the current page
+browserRouter.post('/extract', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { instruction } = extractSchema.parse(req.body);
+    const userId = Number(req.user!.id);
+
+    const pyData = await callPythonBrowserService('/api/v1/browser/extract', 'POST', { instruction, userId });
+    res.json(pyData);
+  } catch (err: any) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: err.errors[0]?.message || 'Validation error' });
+    }
+    res.status(500).json({ error: err.message || 'Failed to extract page data' });
+  }
+});
+
+// 12. POST /api/v1/browser/confirm
 browserRouter.post('/confirm', async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { confirmationId, approved } = confirmSchema.parse(req.body);

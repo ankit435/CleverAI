@@ -46,6 +46,7 @@ interface ChatContextType {
   toggleActivePluginId: (id: string) => void;
   isGenerating: boolean;
   sendMessage: (text: string, attachedFile?: File | null) => Promise<void>;
+  stopGenerating: () => void;
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
   toggleSidebar: () => void;
@@ -517,8 +518,28 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Message Sending via Central apiClient
+  // Message Sending via Central apiClient — async REST kickoff + live SSE progress.
   const [isGenerating, setIsGenerating] = useState(false);
+  const activeStreamRef = React.useRef<{ controller: AbortController; runId: string; threadId: string; aiMsgId: string } | null>(null);
+
+  const stopGenerating = () => {
+    const active = activeStreamRef.current;
+    if (!active) return;
+    active.controller.abort();
+    apiClient.chat.cancelRun(active.runId).catch(() => {});
+    activeStreamRef.current = null;
+    setIsGenerating(false);
+  };
+
+  const updateAiMessage = (threadId: string, aiMsgId: string, patch: Partial<Message>) => {
+    setChats(prev =>
+      prev.map(c =>
+        c.id === threadId
+          ? { ...c, messages: c.messages.map(m => (m.id === aiMsgId ? { ...m, ...patch } : m)), updatedAt: new Date().toISOString() }
+          : c
+      )
+    );
+  };
 
   const sendMessage = async (text: string, attachedFile?: File | null) => {
     if (!text.trim() && !attachedFile) return;
@@ -561,6 +582,24 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setIsGenerating(true);
 
+    // Placeholder AI message shown immediately, live-updated as SSE progress events arrive.
+    const aiMsgId = `msg-ai-${Date.now()}`;
+    const placeholderMsg: Message = {
+      id: aiMsgId,
+      sender: 'ai',
+      text: '',
+      statusText: 'Queued…',
+      isStreaming: true,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    setChats(prev =>
+      prev.map(c =>
+        c.id === currentThreadId
+          ? { ...c, messages: [...c.messages, placeholderMsg], updatedAt: new Date().toISOString() }
+          : c
+      )
+    );
+
     try {
       let documentIds: string[] | undefined = undefined;
 
@@ -575,7 +614,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
 
-      const data = await apiClient.chat.sendMessage({
+      // 1. Kick off the run asynchronously — returns immediately with runId/threadId (HTTP 202).
+      const startRes = await apiClient.chat.sendMessageAsync({
         message: text || `Summarize attached document ${attachedFile?.name || ''}`,
         threadId: currentThreadId,
         model: appConfig.ai.defaultModel ? appConfig.ai.defaultModel : undefined,
@@ -583,27 +623,70 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         documentIds
       });
 
-      const aiMsg: Message = {
-        id: `msg-ai-${Date.now()}`,
-        sender: 'ai',
-        text: data.reply || 'Response received from AI server.',
-        toolResults: data.toolResults,
-        isStreaming: true,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      };
-
-      const finalThreadId = data.threadId || currentThreadId;
+      const runId: string = startRes.runId;
+      const finalThreadId: string = startRes.threadId || currentThreadId;
       if (currentThreadId !== finalThreadId) {
         setActiveChatId(finalThreadId);
       }
+      updateAiMessage(currentThreadId, aiMsgId, { runId });
 
-      setChats(prev =>
-        prev.map(c =>
-          c.id === currentThreadId
-            ? { ...c, id: finalThreadId, messages: [...c.messages, aiMsg], updatedAt: new Date().toISOString() }
-            : c
-        )
-      );
+      // 2. Subscribe to the live SSE progress stream for this exact run.
+      await new Promise<void>((resolve) => {
+        const controller = apiClient.chat.streamRunEvents(
+          runId,
+          (event: any) => {
+            if (event.type === 'state') {
+              updateAiMessage(currentThreadId!, aiMsgId, {
+                statusText: event.current_action || `Status: ${event.status}`
+              });
+            } else if (event.type === 'timing' && event.event?.tool) {
+              updateAiMessage(currentThreadId!, aiMsgId, {
+                statusText: `⚙️ ${event.event.tool} (${event.event.duration_ms}ms)`
+              });
+            } else if (event.type === 'completed') {
+              const finalText = event.reply || 'Response received from AI server.';
+              updateAiMessage(currentThreadId!, aiMsgId, {
+                text: event.error && event.status !== 'COMPLETED' ? `⚠️ ${finalText}` : finalText,
+                toolResults: event.tool_results,
+                statusText: undefined,
+                isStreaming: false
+              });
+              activeStreamRef.current = null;
+              resolve();
+            } else if (event.type === 'error') {
+              updateAiMessage(currentThreadId!, aiMsgId, {
+                text: `⚠️ ${event.message || 'Agent stream error.'}`,
+                statusText: undefined,
+                isStreaming: false
+              });
+              activeStreamRef.current = null;
+              resolve();
+            }
+          },
+          () => {
+            // SSE connection error (network drop, backend unreachable, etc.) — fall back to a
+            // final REST status poll so the user still gets a real result instead of hanging forever.
+            apiClient.chat.getRunStatus(runId)
+              .then((status: any) => {
+                updateAiMessage(currentThreadId!, aiMsgId, {
+                  text: status.reply || '⚠️ Lost connection to the live agent stream, and no final reply was recorded.',
+                  toolResults: status.toolCalls,
+                  statusText: undefined,
+                  isStreaming: false
+                });
+              })
+              .catch(() => {
+                updateAiMessage(currentThreadId!, aiMsgId, {
+                  text: '⚠️ Lost connection to the live agent stream and could not recover the final result.',
+                  statusText: undefined,
+                  isStreaming: false
+                });
+              })
+              .finally(() => resolve());
+          }
+        );
+        activeStreamRef.current = { controller, runId, threadId: currentThreadId!, aiMsgId };
+      });
     } catch (err: any) {
       console.warn('API communication error:', err);
       const errMsg = err.message || '';
@@ -613,21 +696,9 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ? `⚠️ **Oops! Backend Server Not Found.**\n\nUnable to establish a connection with the backend server at \`${appConfig.backend.endpointUrl || 'http://localhost:8000'}\`.\n\nPlease check that the backend service is running and try again.`
         : `⚠️ **Oops! Something went wrong.**\n\n${errMsg || 'Unable to process your request at this time. Please try again.'}`;
 
-      const errorAiMsg: Message = {
-        id: `msg-ai-err-${Date.now()}`,
-        sender: 'ai',
-        text: friendlyText,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      };
-
-      setChats(prev =>
-        prev.map(c =>
-          c.id === currentThreadId
-            ? { ...c, messages: [...c.messages, errorAiMsg], updatedAt: new Date().toISOString() }
-            : c
-        )
-      );
+      updateAiMessage(currentThreadId!, aiMsgId, { text: friendlyText, statusText: undefined, isStreaming: false });
     } finally {
+      activeStreamRef.current = null;
       setIsGenerating(false);
     }
   };
@@ -665,6 +736,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleActivePluginId,
         isGenerating,
         sendMessage,
+        stopGenerating,
         sidebarOpen,
         setSidebarOpen,
         toggleSidebar,

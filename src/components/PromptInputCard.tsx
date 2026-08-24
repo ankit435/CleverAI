@@ -16,7 +16,8 @@ import {
   Image,
   FileText,
   HelpCircle,
-  RotateCcw
+  RotateCcw,
+  Square
 } from 'lucide-react';
 
 interface SlashCommand {
@@ -79,6 +80,7 @@ export const PromptInputCard: React.FC = () => {
 
   const {
     sendMessage,
+    stopGenerating,
     isGenerating,
     activePluginIds,
     setIsPluginModalOpen,
@@ -360,15 +362,26 @@ export const PromptInputCard: React.FC = () => {
             <span>Tools ({activeCount})</span>
           </button>
 
-          {/* Submit Button */}
-          <button 
-            className="btn-submit-prompt"
-            onClick={handleSend}
-            disabled={(!text.trim() && !attachedFile) || isGenerating}
-            title="Send Message (Enter)"
-          >
-            <ArrowUp size={18} />
-          </button>
+          {/* Submit / Stop Button */}
+          {isGenerating ? (
+            <button
+              className="btn-submit-prompt"
+              onClick={stopGenerating}
+              title="Stop Generating"
+              style={{ background: '#ef4444' }}
+            >
+              <Square size={16} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              className="btn-submit-prompt"
+              onClick={handleSend}
+              disabled={!text.trim() && !attachedFile}
+              title="Send Message (Enter)"
+            >
+              <ArrowUp size={18} />
+            </button>
+          )}
         </div>
       </div>
     </div>

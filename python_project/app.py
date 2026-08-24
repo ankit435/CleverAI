@@ -12,7 +12,7 @@ from memory.manager import memory_manager
 from documents import convert_upload
 from tools.executor import execute_tool_calling_flow
 from browser.service import browser_service
-from browser.schema import BrowserMode, BrowserStatus, TabInfo, PageSnapshot, ActionResult
+from browser.schema import BrowserMode, BrowserStatus, TabInfo, ActionResult
 
 # Use the validated key from settings (never a hardcoded fallback).
 INTERNAL_SERVICE_KEY = settings.internal_service_key
@@ -64,6 +64,7 @@ class ChatRequest(BaseModel):
     chain_name: Optional[str] = Field("default_chat", description="Chain name to execute")
     model: Optional[str] = Field(None, description="Model identifier override")
     threadId: Optional[str] = Field(None, description="Conversation thread identifier for memory")
+    runId: Optional[str] = Field(None, description="Caller-supplied run_id (Node's AgentRun.id) so async/SSE tracking shares one identifier end-to-end")
     activePlugins: Optional[List[str]] = Field(default_factory=list, description="Active plugin IDs enabled by user")
     documentContext: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Extracted document chunks for grounding")
     history: Optional[List[Dict[str, str]]] = Field(default_factory=list, description="Conversation history from PostgreSQL")
@@ -98,21 +99,21 @@ class BrowserTabCloseRequest(BaseModel):
     tab_id: str
     userId: Optional[int] = Field(default=1)
 
-class BrowserSnapshotRequest(BaseModel):
-    tab_id: Optional[str] = None
+class BrowserNavigateRequest(BaseModel):
+    url: str
     userId: Optional[int] = Field(default=1)
 
-class BrowserActionRequest(BaseModel):
-    action: str = Field(..., description="Action name: click, type, navigate, scroll, press_key, screenshot, go_back, go_forward")
-    selector: Optional[str] = None
-    text_input: Optional[str] = None
-    url: Optional[str] = None
-    element_id: Optional[int] = None
-    key: Optional[str] = None
-    direction: Optional[str] = "down"
-    pixels: Optional[int] = 500
-    tab_id: Optional[str] = None
+class BrowserActRequest(BaseModel):
+    instruction: str = Field(..., description="Plain natural-language action, e.g. 'click the Sign In button'")
     confirmed: Optional[bool] = False
+    userId: Optional[int] = Field(default=1)
+
+class BrowserObserveRequest(BaseModel):
+    instruction: Optional[str] = None
+    userId: Optional[int] = Field(default=1)
+
+class BrowserExtractRequest(BaseModel):
+    instruction: str = Field(..., description="What information to extract from the current page")
     userId: Optional[int] = Field(default=1)
 
 class BrowserConfirmRequest(BaseModel):
@@ -161,7 +162,7 @@ async def convert_document(
 @app.post("/api/v1/browser/connect")
 def browser_connect(req: BrowserConnectRequest):
     """Connect to user's existing Chrome/Edge browser via CDP or managed session."""
-    user_id = req.userId or 1
+    user_id = req.userId
     success, message, status = browser_service.connect(
         user_id=user_id, mode=req.mode or BrowserMode.EXISTING_CDP, cdp_url=req.cdp_url or "http://127.0.0.1:9222"
     )
@@ -181,19 +182,19 @@ def browser_disconnect(req: Optional[BrowserConnectRequest] = None):
 @app.get("/api/v1/browser/status")
 def browser_get_status(userId: Optional[int] = 1):
     """Get connectivity, browser type, and open tabs count."""
-    status = browser_service.get_status(user_id=userId or 1)
+    status = browser_service.get_status(user_id=userId)
     return status.model_dump()
 
 @app.get("/api/v1/browser/tabs")
 def browser_list_tabs(userId: Optional[int] = 1):
     """List open tabs with titles, URLs, and active status."""
-    tabs = browser_service.list_tabs(user_id=userId or 1)
+    tabs = browser_service.list_tabs(user_id=userId)
     return {"tabs": [t.model_dump() for t in tabs]}
 
 @app.post("/api/v1/browser/tabs/select")
 def browser_select_tab(req: BrowserTabSelectRequest):
     """Switch active focused tab in browser."""
-    success, message, tab = browser_service.select_tab(user_id=req.userId or 1, tab_id=req.tab_id)
+    success, message, tab = browser_service.select_tab(user_id=req.userId, tab_id=req.tab_id)
     return {
         "success": success,
         "message": message,
@@ -203,7 +204,7 @@ def browser_select_tab(req: BrowserTabSelectRequest):
 @app.post("/api/v1/browser/tabs/open")
 def browser_open_tab(req: BrowserTabOpenRequest):
     """Open new tab and navigate to URL."""
-    success, message, tab = browser_service.open_new_tab(user_id=req.userId or 1, url=req.url)
+    success, message, tab = browser_service.open_new_tab(user_id=req.userId, url=req.url)
     return {
         "success": success,
         "message": message,
@@ -213,38 +214,38 @@ def browser_open_tab(req: BrowserTabOpenRequest):
 @app.post("/api/v1/browser/tabs/close")
 def browser_close_tab(req: BrowserTabCloseRequest):
     """Close tab by ID."""
-    success, message = browser_service.close_tab(user_id=req.userId or 1, tab_id=req.tab_id)
+    success, message = browser_service.close_tab(user_id=req.userId, tab_id=req.tab_id)
     return {"success": success, "message": message}
 
-@app.post("/api/v1/browser/snapshot")
-def browser_snapshot(req: BrowserSnapshotRequest):
-    """Capture structured accessibility snapshot of active or target tab."""
-    res = browser_service.snapshot(user_id=req.userId or 1, tab_id=req.tab_id)
+@app.post("/api/v1/browser/navigate")
+def browser_navigate_route(req: BrowserNavigateRequest):
+    """Navigate the browser to a URL (Stagehand-managed)."""
+    res = browser_service.navigate(user_id=req.userId, url=req.url)
     return res.model_dump()
 
-@app.post("/api/v1/browser/action")
-def browser_execute_action(req: BrowserActionRequest):
-    """Execute semantic browser action with Human Confirmation Security Gate."""
-    res = browser_service.execute_action(
-        user_id=req.userId or 1,
-        action=req.action,
-        selector=req.selector,
-        text_input=req.text_input,
-        url=req.url,
-        element_id=req.element_id,
-        key=req.key,
-        direction=req.direction or "down",
-        pixels=req.pixels or 500,
-        tab_id=req.tab_id,
-        confirmed=req.confirmed or False
-    )
+@app.post("/api/v1/browser/act")
+def browser_act_route(req: BrowserActRequest):
+    """Perform a natural-language action on the current page, with Human Confirmation Security Gate."""
+    res = browser_service.act(user_id=req.userId, instruction=req.instruction, confirmed=req.confirmed)
+    return res.model_dump()
+
+@app.post("/api/v1/browser/observe")
+def browser_observe_route(req: BrowserObserveRequest):
+    """Discover actionable elements on the current page."""
+    res = browser_service.observe(user_id=req.userId, instruction=req.instruction)
+    return res.model_dump()
+
+@app.post("/api/v1/browser/extract")
+def browser_extract_route(req: BrowserExtractRequest):
+    """Extract structured/free-text data from the current page."""
+    res = browser_service.extract(user_id=req.userId, instruction=req.instruction)
     return res.model_dump()
 
 @app.post("/api/v1/browser/confirm")
 def browser_resolve_confirmation(req: BrowserConfirmRequest):
     """Approve or reject a pending dangerous action."""
     res = browser_service.resolve_confirmation(
-        user_id=req.userId or 1,
+        user_id=req.userId,
         confirmation_id=req.confirmation_id,
         approved=req.approved
     )
@@ -295,13 +296,14 @@ async def chat_async_endpoint(req: ChatRequest):
     target_model = (req.model or os.getenv("DEFAULT_MODEL") or settings.default_model or "").strip()
     active_plugins = req.activePlugins or []
     document_context = req.documentContext or []
-    user_id = req.userId or 1
+    user_id = req.userId
 
     run_record = async_agent_manager.create_run(
         user_id=user_id,
         thread_id=thread_id,
         prompt=user_msg,
-        model=target_model
+        model=target_model,
+        run_id=req.runId
     )
 
     # Spawn background agent execution
@@ -387,13 +389,14 @@ async def chat_endpoint(req: ChatRequest):
     target_model = (req.model or os.getenv("DEFAULT_MODEL") or settings.default_model or "").strip()
     active_plugins = req.activePlugins or []
     document_context = req.documentContext or []
-    user_id = req.userId or 1
+    user_id = req.userId
 
     run_record = async_agent_manager.create_run(
         user_id=user_id,
         thread_id=thread_id,
         prompt=user_msg,
-        model=target_model
+        model=target_model,
+        run_id=req.runId
     )
 
     reply_text, tool_results_data, provider_name = execute_tool_calling_flow(

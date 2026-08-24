@@ -81,6 +81,11 @@ export const ChatFeed: React.FC = () => {
                   onComplete={() => animatedMessageIds.add(msg.id)}
                   onCharacterTyped={scrollToBottom}
                 />
+              ) : msg.sender === 'ai' && msg.isStreaming && !msg.text ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--primary)', fontSize: '14px' }}>
+                  <Sparkles size={16} className="animate-spin" />
+                  <span>{msg.statusText || 'Working on it…'}</span>
+                </div>
               ) : msg.sender === 'ai' ? (
                 <div className="message-body">
                   <MarkdownRenderer content={msg.text} />
@@ -113,22 +118,6 @@ export const ChatFeed: React.FC = () => {
           </div>
         );
       })}
-
-      {/* Streaming / Tool Loading indicator */}
-      {isGenerating && (
-        <div className="message-bubble" style={{ opacity: 0.85 }}>
-          <div className="message-avatar ai">
-            <Bot size={18} />
-          </div>
-          <div className="message-content-wrapper">
-            <span className="message-sender-name">{appConfig.branding.appName} AI</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--primary)', fontSize: '14px' }}>
-              <Sparkles size={16} className="animate-spin" />
-              <span>Orchestrating active plugin tools & generating response...</span>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div ref={bottomRef} />
     </div>

@@ -2,7 +2,6 @@
 import re
 import urllib.parse
 import urllib.request
-import json
 from typing import Any, Dict, List
 from langchain_core.tools import tool
 
@@ -27,50 +26,45 @@ def decode_search_url(raw_url: str) -> str:
                     pass
     return raw_url
 
-def _live_browser_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
-    """Fetch live web search results using browser worker."""
-    try:
-        from browser.service import browser_service
-        def _task():
-            sess = browser_service.session_manager.get_session(1)
-            if not sess or not sess.context:
-                browser_service.session_manager.launch_managed_browser(1)
-                sess = browser_service.session_manager.get_session(1)
-            if not sess or not sess.context:
-                return []
-            
-            page = sess.tab_manager._tab_map.get("tab_1") or sess.context.new_page()
-            enc = urllib.parse.quote_plus(query)
-            page.goto(f"https://www.bing.com/search?q={enc}", wait_until="domcontentloaded", timeout=12000)
-            
-            results = []
-            locators = page.locator("li.b_algo")
-            count = locators.count()
-            for i in range(min(count, max_results)):
-                loc = locators.nth(i)
-                title = loc.locator("h2 a").inner_text()
-                href = loc.locator("h2 a").get_attribute("href")
-                snippet = loc.locator(".b_caption p").inner_text() if loc.locator(".b_caption p").count() > 0 else ""
-                if title and href:
-                    clean_url = decode_search_url(href.strip())
-                    results.append({"title": title.strip(), "url": clean_url, "snippet": snippet.strip()})
-            return results
+def _live_html_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """Fetch live web search results via a plain HTTP request (no browser needed).
 
-        return browser_service.worker.run(_task)
+    Kept independent from the Browser Agent on purpose: Stagehand's act/observe/
+    extract primitives are built for AI-guided page interaction, not for being a
+    cheap scraping backend for every search query the General Agent makes. A
+    direct HTTP fetch + regex parse of Bing's HTML is faster and doesn't consume
+    a browser session at all.
+    """
+    try:
+        enc = urllib.parse.quote_plus(query)
+        req = urllib.request.Request(
+            f"https://www.bing.com/search?q={enc}",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+
+        results: List[Dict[str, str]] = []
+        for block in re.findall(r'<li class="b_algo">(.*?)</li>', html, re.DOTALL)[:max_results]:
+            link_match = re.search(r'<h2><a href="([^"]+)"[^>]*>(.*?)</a></h2>', block, re.DOTALL)
+            if not link_match:
+                continue
+            href, title_html = link_match.groups()
+            title = re.sub(r'<[^>]+>', '', title_html).strip()
+            snippet_match = re.search(r'<p>(.*?)</p>', block, re.DOTALL)
+            snippet = re.sub(r'<[^>]+>', '', snippet_match.group(1)).strip() if snippet_match else ""
+            if title and href:
+                results.append({"title": title, "url": decode_search_url(href.strip()), "snippet": snippet})
+        return results
     except Exception:
         return []
+
 
 def perform_web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
     """Execute live web search query and return parsed results with titles, snippets, and citations."""
     cleaned_query = re.sub(r'^(search for|search|find|latest|look up|google|give me the link of|give me)\s*', '', query, flags=re.IGNORECASE).strip() or query
-    encoded = urllib.parse.quote_plus(cleaned_query)
-    results: List[Dict[str, str]] = []
 
-    # 1. Try Live Browser Search (Bing / Google)
-    try:
-        results = _live_browser_search(cleaned_query, max_results=max_results)
-    except Exception:
-        pass
+    results = _live_html_search(cleaned_query, max_results=max_results)
 
     if not results:
         return {

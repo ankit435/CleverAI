@@ -80,7 +80,81 @@ export const apiClient = {
 
       return apiFetch('/chat', { method: 'POST', body: JSON.stringify(cleanPayload) });
     },
-    
+
+    // Kicks off an agent run asynchronously (HTTP 202 + runId) — the actual agent
+    // work happens in the background; callers must poll `getRunStatus` or, better,
+    // subscribe to `streamRunEvents` for live SSE progress.
+    sendMessageAsync: (payload: { message: string; threadId?: string; model?: string; activePlugins?: string[]; documentIds?: string[] }) => {
+      const cleanPayload: Record<string, any> = {
+        message: payload.message
+      };
+      if (payload.threadId) cleanPayload.threadId = payload.threadId;
+      if (payload.model && payload.model.trim()) cleanPayload.model = payload.model.trim();
+      if (payload.activePlugins) cleanPayload.activePlugins = payload.activePlugins;
+      if (payload.documentIds && payload.documentIds.length > 0) cleanPayload.documentIds = payload.documentIds;
+
+      return apiFetch('/chat?async=true', { method: 'POST', body: JSON.stringify(cleanPayload) });
+    },
+
+    getRunStatus: (runId: string) => apiFetch(`/chat/runs/${runId}`, { method: 'GET' }),
+
+    cancelRun: (runId: string) => apiFetch(`/chat/runs/${runId}/cancel`, { method: 'POST' }),
+
+    /**
+     * Subscribes to the Server-Sent Events stream for a live agent run and invokes
+     * `onEvent` for every parsed SSE frame (`{type, ...}`). Uses `fetch` + a manual
+     * reader instead of `EventSource` so the JWT Authorization header can be attached
+     * (native EventSource has no header support). Returns an `AbortController` the
+     * caller can use to cancel the subscription (e.g. on unmount).
+     */
+    streamRunEvents: (runId: string, onEvent: (event: any) => void, onError?: (err: Error) => void): AbortController => {
+      const controller = new AbortController();
+      const token = localStorage.getItem('clever_jwt_token');
+      const url = `${API_BASE_URL}/chat/runs/${runId}/events`;
+
+      (async () => {
+        try {
+          const response = await fetch(url, {
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            signal: controller.signal
+          });
+
+          if (!response.ok || !response.body) {
+            throw new Error(`Failed to open event stream (status ${response.status})`);
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const frames = buffer.split('\n\n');
+            buffer = frames.pop() || '';
+
+            for (const frame of frames) {
+              const line = frame.split('\n').find(l => l.startsWith('data:'));
+              if (!line) continue;
+              try {
+                onEvent(JSON.parse(line.slice(5).trim()));
+              } catch {
+                // Ignore malformed frames rather than killing the whole stream.
+              }
+            }
+          }
+        } catch (err: any) {
+          if (err?.name !== 'AbortError') {
+            onError?.(err instanceof Error ? err : new Error(String(err)));
+          }
+        }
+      })();
+
+      return controller;
+    },
+
     getHistory: () => apiFetch('/chat/history', { method: 'GET' }),
 
     clearHistory: () => apiFetch('/chat/history', { method: 'DELETE' })
@@ -164,21 +238,19 @@ export const apiClient = {
     closeTab: (tabId: string) =>
       apiFetch('/browser/tabs/close', { method: 'POST', body: JSON.stringify({ tabId }) }),
 
-    snapshot: (tabId?: string) =>
-      apiFetch('/browser/snapshot', { method: 'POST', body: JSON.stringify({ tabId }) }),
+    // Stagehand-powered instruction-based primitives (no selectors/element IDs —
+    // Stagehand's AI resolves the target from plain natural language).
+    navigate: (url: string) =>
+      apiFetch('/browser/navigate', { method: 'POST', body: JSON.stringify({ url }) }),
 
-    executeAction: (payload: {
-      action: string;
-      selector?: string;
-      textInput?: string;
-      url?: string;
-      elementId?: number;
-      key?: string;
-      direction?: string;
-      pixels?: number;
-      tabId?: string;
-      confirmed?: boolean;
-    }) => apiFetch('/browser/action', { method: 'POST', body: JSON.stringify(payload) }),
+    act: (instruction: string, confirmed: boolean = false) =>
+      apiFetch('/browser/act', { method: 'POST', body: JSON.stringify({ instruction, confirmed }) }),
+
+    observe: (instruction?: string) =>
+      apiFetch('/browser/observe', { method: 'POST', body: JSON.stringify({ instruction }) }),
+
+    extract: (instruction: string) =>
+      apiFetch('/browser/extract', { method: 'POST', body: JSON.stringify({ instruction }) }),
 
     confirmAction: (payload: { confirmationId: string; approved: boolean }) =>
       apiFetch('/browser/confirm', { method: 'POST', body: JSON.stringify(payload) })

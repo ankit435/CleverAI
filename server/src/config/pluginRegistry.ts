@@ -48,6 +48,19 @@ export const SYSTEM_PLUGINS: SystemPluginDefinition[] = [
     }
   },
   {
+    id: 'sandbox-agent',
+    name: 'Sandbox Agent (Unrestricted Local Execution)',
+    description: 'Autonomous agent that runs shell commands, Python scripts, and file I/O directly on the host. No container isolation yet — enable only if you trust the requests you send it.',
+    icon: '🧪',
+    category: 'code',
+    isEnabledByDefault: false,
+    author: 'Clever Runtime Services',
+    version: '1.0.0',
+    checkAvailability: async () => {
+      return { isAvailable: true, statusMessage: 'Sandbox Agent Ready (Local, Unsandboxed)' };
+    }
+  },
+  {
     id: 'dalle3-image',
     name: 'DALL-E 3 Visual Studio',
     description: 'Generates, renders, and visualizes high-resolution AI imagery based on your prompt.',

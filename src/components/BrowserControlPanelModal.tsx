@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { 
   Globe, Compass, Terminal, Shield, RefreshCw, Power, CheckCircle, 
   AlertTriangle, ExternalLink, Plus, Trash2, Eye, Play, MousePointer, 
-  ArrowLeft, ArrowRight, CornerDownLeft, X, Layers, Copy, Check
+  ArrowRight, X, Layers, Copy, Check
 } from 'lucide-react';
 import { apiClient } from '../config/apiClient';
-import { BrowserSessionStatus, BrowserTabItem, BrowserSnapshotView, BrowserModeType } from '../types';
+import { BrowserSessionStatus, BrowserTabItem, BrowserActionResult, BrowserModeType } from '../types';
 
 interface BrowserControlPanelModalProps {
   isOpen: boolean;
@@ -19,10 +19,9 @@ export const BrowserControlPanelModal: React.FC<BrowserControlPanelModalProps> =
   const [mode, setMode] = useState<BrowserModeType>('existing_cdp');
   const [cdpUrl, setCdpUrl] = useState('http://127.0.0.1:9222');
   const [newTabUrl, setNewTabUrl] = useState('');
-  const [snapshot, setSnapshot] = useState<BrowserSnapshotView | null>(null);
+  const [snapshot, setSnapshot] = useState<BrowserActionResult | null>(null);
   const [navUrl, setNavUrl] = useState('');
-  const [clickTarget, setClickTarget] = useState('');
-  const [typeText, setTypeText] = useState('');
+  const [instruction, setInstruction] = useState('');
   const [copiedCmd, setCopiedCmd] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
 
@@ -144,12 +143,12 @@ export const BrowserControlPanelModal: React.FC<BrowserControlPanelModalProps> =
   const handleTakeSnapshot = async () => {
     setActionLoading(true);
     try {
-      const res = await apiClient.browser.snapshot();
-      if (res.status === 'success' && res.snapshot) {
-        setSnapshot(res.snapshot);
-        setMessage({ text: `Captured DOM snapshot: ${res.snapshot.title}`, type: 'success' });
+      const res: BrowserActionResult = await apiClient.browser.observe();
+      setSnapshot(res);
+      if (res.status === 'success') {
+        setMessage({ text: 'Captured actionable elements on the current page.', type: 'success' });
       } else {
-        setMessage({ text: res.message || 'Failed to capture snapshot', type: 'error' });
+        setMessage({ text: res.message || 'Failed to observe page', type: 'error' });
       }
     } catch (err: any) {
       setMessage({ text: err.message, type: 'error' });
@@ -158,14 +157,30 @@ export const BrowserControlPanelModal: React.FC<BrowserControlPanelModalProps> =
     }
   };
 
-  const handleExecuteAction = async (actionName: string, extra: any = {}) => {
+  const handleNavigate = async () => {
+    if (!navUrl.trim()) return;
     setActionLoading(true);
     try {
-      const res = await apiClient.browser.executeAction({ action: actionName, ...extra });
+      const res: BrowserActionResult = await apiClient.browser.navigate(navUrl.trim());
+      setMessage({ text: res.message, type: res.status === 'success' ? 'success' : 'error' });
+      await fetchStatus();
+    } catch (err: any) {
+      setMessage({ text: err.message, type: 'error' });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleAct = async () => {
+    if (!instruction.trim()) return;
+    setActionLoading(true);
+    try {
+      const res: BrowserActionResult = await apiClient.browser.act(instruction.trim());
       if (res.status === 'confirmation_required') {
         setMessage({ text: `⚠️ ${res.message}`, type: 'error' });
       } else if (res.status === 'success') {
         setMessage({ text: `⚡ ${res.message}`, type: 'success' });
+        setInstruction('');
         await fetchStatus();
       } else {
         setMessage({ text: res.message || 'Action failed', type: 'error' });
@@ -405,13 +420,13 @@ export const BrowserControlPanelModal: React.FC<BrowserControlPanelModalProps> =
             </div>
           )}
 
-          {/* Action Sandbox & DOM Snapshot */}
+          {/* Semantic Actions & Page Observer (Stagehand-powered) */}
           {status?.connected && (
             <div className="p-4 rounded-xl bg-slate-950/40 border border-slate-800 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-2">
                   <Play size={14} className="text-cyan-400" />
-                  Semantic Actions & DOM Inspector
+                  Stagehand Actions & Page Observer
                 </h3>
                 <button
                   onClick={handleTakeSnapshot}
@@ -419,48 +434,59 @@ export const BrowserControlPanelModal: React.FC<BrowserControlPanelModalProps> =
                   className="px-3 py-1.5 text-xs rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 flex items-center gap-1.5"
                 >
                   <Eye size={13} />
-                  Capture Snapshot
+                  Observe Page
                 </button>
               </div>
 
-              {/* Quick Actions Row */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {/* Navigate */}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={navUrl}
+                  onChange={(e) => setNavUrl(e.target.value)}
+                  placeholder="Navigate to URL (e.g. https://github.com)"
+                  className="flex-1 px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-cyan-500"
+                  onKeyDown={(e) => e.key === 'Enter' && handleNavigate()}
+                />
                 <button
-                  onClick={() => handleExecuteAction('go_back')}
-                  className="p-2 text-xs rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-center gap-1.5 text-slate-300"
+                  onClick={handleNavigate}
+                  disabled={actionLoading || !navUrl.trim()}
+                  className="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 flex items-center gap-1.5 disabled:opacity-50"
                 >
-                  <ArrowLeft size={13} /> Back
-                </button>
-                <button
-                  onClick={() => handleExecuteAction('go_forward')}
-                  className="p-2 text-xs rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-center gap-1.5 text-slate-300"
-                >
-                  <ArrowRight size={13} /> Forward
-                </button>
-                <button
-                  onClick={() => handleExecuteAction('scroll', { direction: 'down', pixels: 500 })}
-                  className="p-2 text-xs rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-center gap-1.5 text-slate-300"
-                >
-                  Scroll Down
-                </button>
-                <button
-                  onClick={() => handleExecuteAction('screenshot')}
-                  className="p-2 text-xs rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center justify-center gap-1.5 text-slate-300"
-                >
-                  Screenshot
+                  <ArrowRight size={13} />
+                  Go
                 </button>
               </div>
 
-              {/* Snapshot Viewer */}
+              {/* Natural-language action (no selectors needed — Stagehand resolves the target) */}
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={instruction}
+                  onChange={(e) => setInstruction(e.target.value)}
+                  placeholder="Describe an action, e.g. 'click the Sign In button'"
+                  className="flex-1 px-3 py-1.5 text-xs bg-slate-900 border border-slate-700 rounded-lg text-white focus:outline-none focus:border-cyan-500"
+                  onKeyDown={(e) => e.key === 'Enter' && handleAct()}
+                />
+                <button
+                  onClick={handleAct}
+                  disabled={actionLoading || !instruction.trim()}
+                  className="px-3 py-1.5 text-xs font-medium rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <MousePointer size={13} />
+                  Act
+                </button>
+              </div>
+
+              {/* Observe Result Viewer */}
               {snapshot && (
                 <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 space-y-3">
                   <div className="flex items-center justify-between text-xs text-slate-400">
-                    <span className="font-semibold text-white truncate">{snapshot.title}</span>
-                    <span>{snapshot.elements?.length || 0} interactive elements</span>
+                    <span className="font-semibold text-white">Page Observation</span>
                   </div>
 
                   <div className="p-2 rounded bg-slate-950 font-mono text-[11px] text-slate-300 max-h-40 overflow-y-auto whitespace-pre-wrap">
-                    {snapshot.formattedSnapshot}
+                    {snapshot.message}
                   </div>
                 </div>
               )}

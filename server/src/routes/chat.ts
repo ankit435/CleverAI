@@ -286,9 +286,12 @@ chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
       }));
 
     // Build clean payload for Python agent microservice (omitting model so Python uses its own .env DEFAULT_MODEL)
+    // `runId` is shared end-to-end: Node's `agentRun.id` becomes Python's `async_agent_manager` run_id,
+    // so status polling and the SSE event stream always correlate to the exact same run.
     const pythonPayload: Record<string, any> = {
       message,
       threadId: conversation.id,
+      runId: agentRun.id,
       activePlugins,
       documentContext,
       history: historyList,

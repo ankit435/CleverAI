@@ -31,6 +31,15 @@ class Settings(BaseModel):
     port: int = int(os.getenv("PORT", "8001"))
     host: str = os.getenv("HOST", "0.0.0.0")
 
+    # --- Sandbox Agent (arbitrary code/shell execution specialist) ---
+    # "local_unrestricted": executes directly on host, no isolation (current default,
+    # for fast local development/testing only — see tools/sandbox_tools.py header).
+    # "docker": reserved for a future containerized runner.
+    sandbox_execution_mode: str = os.getenv("SANDBOX_EXECUTION_MODE", "local_unrestricted")
+    sandbox_command_timeout_seconds: float = float(os.getenv("SANDBOX_COMMAND_TIMEOUT_SECONDS", "30"))
+    sandbox_max_output_chars: int = int(os.getenv("SANDBOX_MAX_OUTPUT_CHARS", "6000"))
+    sandbox_max_iterations: int = int(os.getenv("SANDBOX_MAX_ITERATIONS", "10"))
+
 
 _raw_settings = Settings()
 
