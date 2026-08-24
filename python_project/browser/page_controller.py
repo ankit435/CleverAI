@@ -179,3 +179,53 @@ class PageController:
                 message=f"Failed to go forward: {str(e)}",
                 error=str(e)
             )
+
+    # ------------------------------------------------------------------
+    # Delegations for new actions added to ActionExecutor
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def select_option(page: Page, value: str, selector: Optional[str] = None, element_id: Optional[Any] = None) -> ActionResult:
+        """Select an option from a <select> dropdown."""
+        return action_executor.select_option(page, value=value, selector=selector, element_id=element_id)
+
+    @staticmethod
+    def double_click(page: Page, selector: Optional[str] = None, element_id: Optional[Any] = None, text: Optional[str] = None) -> ActionResult:
+        """Double-click an element."""
+        return action_executor.double_click(page, selector=selector, element_id=element_id, text=text)
+
+    @staticmethod
+    def evaluate_js(page: Page, js_code: str) -> ActionResult:
+        """Evaluate JavaScript in page context."""
+        return action_executor.evaluate_js(page, js_code=js_code)
+
+    @staticmethod
+    def reload(page: Page) -> ActionResult:
+        """Reload / refresh the current page."""
+        return action_executor.reload(page)
+
+    @staticmethod
+    def get_attribute(page: Page, attribute: str, selector: Optional[str] = None, element_id: Optional[Any] = None) -> ActionResult:
+        """Read a named DOM attribute from an element."""
+        return action_executor.get_attribute(page, attribute=attribute, selector=selector, element_id=element_id)
+
+    @staticmethod
+    def drag_drop(page: Page, source_selector: str, target_selector: str) -> ActionResult:
+        """Drag element and drop onto target."""
+        return action_executor.drag_drop(page, source_selector=source_selector, target_selector=target_selector)
+
+    @staticmethod
+    def upload_file(page: Page, file_path: str, selector: Optional[str] = None, element_id: Optional[Any] = None) -> ActionResult:
+        """Set a file on a file-input element."""
+        return action_executor.upload_file(page, file_path=file_path, selector=selector, element_id=element_id)
+
+    @staticmethod
+    def mouse_scroll(
+        page: Page,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        delta_x: float = 0,
+        delta_y: float = 500
+    ) -> ActionResult:
+        """Mouse wheel at specific screen coordinates for scrolling containers."""
+        return action_executor.mouse_scroll(page, x=x, y=y, delta_x=delta_x, delta_y=delta_y)

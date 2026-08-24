@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
 from config import settings
 from models import get_chat_model, invoke_llm_with_diagnostics, LLMTimeoutError, LLMCancelledError
+from browser.context import set_current_user_id
 from agent.async_manager import (
     async_agent_manager, AgentRunState, LLM_REQUEST_TIMEOUT,
     BROWSER_ACTION_TIMEOUT, INDIVIDUAL_TOOL_TIMEOUT, AGENT_TOTAL_RUN_TIMEOUT
@@ -19,12 +20,17 @@ from tools.calculator import calculate, evaluate_math_expression
 from tools.dynamic_tool_builder import auto_create_and_execute_tool, create_and_run_tool
 from browser.schema import PolicyStrategy, TaskRequirement
 from browser.tools import (
-    ALL_BROWSER_TOOLS, browser_status, browser_list_tabs, browser_get_active_tab,
-    browser_select_tab, browser_navigate, browser_snapshot, browser_click,
-    browser_type, browser_press_key, browser_scroll, browser_screenshot,
-    browser_go_back, browser_go_forward, navigate_browser, extract_text,
-    get_elements, click_element, type_text, press_key, wait_for_selector,
-    extract_hyperlinks, screenshot, finish_task
+    ALL_BROWSER_TOOLS,
+    browser_status, browser_list_tabs, browser_get_active_tab, browser_select_tab,
+    browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key,
+    browser_scroll, browser_screenshot, browser_go_back, browser_go_forward,
+    # New full-coverage actions
+    browser_select_option, browser_double_click, browser_evaluate_js, browser_reload,
+    browser_get_attribute, browser_drag_drop, browser_upload_file, browser_new_tab,
+    browser_mouse_scroll,
+    # Alias / compat tools
+    navigate_browser, extract_text, get_elements, click_element, type_text,
+    press_key, wait_for_selector, extract_hyperlinks, screenshot, finish_task,
 )
 from browser.service import browser_service
 
@@ -59,6 +65,16 @@ TOOL_MAP = {
     "finish_task": finish_task,
     "browse_webpage": browse_webpage,
     "search_and_browse": search_and_browse,
+    # New full-coverage browser actions
+    "browser_select_option": browser_select_option,
+    "browser_double_click": browser_double_click,
+    "browser_evaluate_js": browser_evaluate_js,
+    "browser_reload": browser_reload,
+    "browser_get_attribute": browser_get_attribute,
+    "browser_drag_drop": browser_drag_drop,
+    "browser_upload_file": browser_upload_file,
+    "browser_new_tab": browser_new_tab,
+    "browser_mouse_scroll": browser_mouse_scroll,
     "code-interpreter": code_interpreter,
     "code_interpreter": code_interpreter,
     "dalle3-image": generate_image,
@@ -87,6 +103,15 @@ TOOL_DISPLAY_NAMES = {
     "browser_go_forward": ("browser-agent", "Browser History Forward"),
     "browse_webpage": ("browser-agent", "Live Web Browser Agent"),
     "search_and_browse": ("browser-agent", "Web Search & Page Reader"),
+    "browser_select_option": ("browser-agent", "Browser Dropdown Select"),
+    "browser_double_click": ("browser-agent", "Browser Double Click"),
+    "browser_evaluate_js": ("browser-agent", "Browser JavaScript Eval"),
+    "browser_reload": ("browser-agent", "Browser Page Reload"),
+    "browser_get_attribute": ("browser-agent", "Browser Attribute Reader"),
+    "browser_drag_drop": ("browser-agent", "Browser Drag & Drop"),
+    "browser_upload_file": ("browser-agent", "Browser File Upload"),
+    "browser_new_tab": ("browser-agent", "Browser New Tab"),
+    "browser_mouse_scroll": ("browser-agent", "Browser Mouse Wheel Scroll"),
     "code_interpreter": ("code-interpreter", "Code Sandbox Interpreter"),
     "generate_image": ("dalle3-image", "DALL-E 3 Visual Studio"),
     "calculate": ("calculator", "Math & Calculation Engine"),
@@ -156,6 +181,22 @@ def synthesize_tool_results_into_markdown(user_prompt: str, tool_results_list: L
 
     return "\n".join(sections).strip()
 
+
+def _maybe_close_auto_browser(user_id: int, was_connected_before: bool) -> None:
+    """
+    If the agent auto-launched a managed Playwright browser for this run
+    (i.e. it was not already connected when the run started) close it now
+    so the desktop is clean after every task.
+    CDP-connected user browsers are NEVER closed here.
+    """
+    try:
+        session = browser_service.session_manager.get_session(user_id)
+        if session and session.is_connected and session.is_managed and not was_connected_before:
+            browser_service.disconnect(user_id=user_id)
+    except Exception:
+        pass  # Best-effort — never let cleanup crash the caller
+
+
 def execute_tool_calling_flow(
     user_prompt: str,
     active_plugin_ids: List[str],
@@ -170,8 +211,15 @@ def execute_tool_calling_flow(
     """
     Executes end-to-end multi-turn Autonomous Hybrid Browser & Intelligence Agent loop.
     """
+    # 0. Bind the authenticated user_id to this execution context so that all
+    #    browser tools (which run in the same thread) pick it up automatically.
+    set_current_user_id(user_id)
+
     # 1. Evaluate Task Intent & Browser Policy
     policy = browser_service.evaluate_intent(user_prompt, user_id=user_id)
+
+    # Early-exit for tasks that require the user's own authenticated browser.
+    # No cleanup needed here because we never launched anything.
 
     # Scenario: Private Authenticated Task without Connected Browser
     if policy.strategy == PolicyStrategy.PROMPT_USER_TO_CONNECT:
@@ -187,16 +235,26 @@ def execute_tool_calling_flow(
             "Browser Policy & Security Gate"
         )
 
+    # Record connection state BEFORE we potentially spawn a managed browser so
+    # _maybe_close_auto_browser knows whether to clean up on exit.
+    _pre_run_browser_connected = browser_service.get_status(user_id=user_id).connected
+
     # Scenario: Public Browser Task -> Ensure Managed Browser is ready if not connected
     if policy.strategy == PolicyStrategy.LAUNCH_MANAGED:
         browser_service.session_manager.ensure_browser_for_policy(user_id, policy)
 
     llm = get_chat_model(model_name=model_name)
     
-    # 2. Resolve active tools
-    selected_tools = [web_search, find_and_rank_jobs]
+    # 2. Resolve active tools based on enabled plugin IDs.
+    #    web_search is the baseline — always included.
+    #    browser-agent and all browser tools are always included because the agent
+    #    needs them to fulfil navigation intent regardless of plugin toggles.
+    selected_tools = [web_search]
 
-    # Always equip complete browser tool suite and LangGraph tools
+    if "job_intelligence" in active_plugin_ids or "web-search" in active_plugin_ids or not active_plugin_ids:
+        selected_tools.append(find_and_rank_jobs)
+
+    # Always equip complete browser tool suite (required for autonomous navigation).
     for b_tool in ALL_BROWSER_TOOLS:
         if b_tool not in selected_tools:
             selected_tools.append(b_tool)
@@ -207,7 +265,7 @@ def execute_tool_calling_flow(
         selected_tools.append(generate_image)
     if "calculator" in active_plugin_ids or "calculate" in active_plugin_ids:
         selected_tools.append(calculate)
-    
+
     selected_tools.append(auto_create_and_execute_tool)
 
     # 3. Build system instructions
@@ -484,6 +542,10 @@ def execute_tool_calling_flow(
                     return synth, tool_results_list, "Autonomous Multi-Tool Agent"
                 async_agent_manager.complete_run(run_id, str(e), tool_results_list, error=str(e))
                 raise e
+        finally:
+            # Auto-close any managed browser that was spawned exclusively for
+            # this task. CDP-connected user browsers are left untouched.
+            _maybe_close_auto_browser(user_id, _pre_run_browser_connected)
 
     # 5. Deterministic fallback (strictly 0ms execution, no secondary LLM invoke)
     lower = user_prompt.lower()

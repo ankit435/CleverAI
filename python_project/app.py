@@ -1,7 +1,7 @@
 """FastAPI Microservice with Dynamic Tool Calling, RAG, and Browser AI Agent Platform."""
 import time
 from typing import Optional, List, Dict, Any
-from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File, Header
+from fastapi import FastAPI, HTTPException, Security, Depends, UploadFile, File, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security.api_key import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -14,7 +14,8 @@ from tools.executor import execute_tool_calling_flow
 from browser.service import browser_service
 from browser.schema import BrowserMode, BrowserStatus, TabInfo, PageSnapshot, ActionResult
 
-INTERNAL_SERVICE_KEY = os.environ.get("INTERNAL_SERVICE_KEY", "clever-internal-agent-secret-key-prod-2026")
+# Use the validated key from settings (never a hardcoded fallback).
+INTERNAL_SERVICE_KEY = settings.internal_service_key
 
 app = FastAPI(
     title=settings.app_name,
@@ -22,13 +23,27 @@ app = FastAPI(
     description="Production-grade LangChain Microservice with Browser AI Agent, Tool Calling, and RAG",
 )
 
+# CORS: use explicit origin allowlist from ALLOWED_ORIGINS env var.
+# Wildcards + credentials simultaneously is a browser security violation.
+_allowed_origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "x-internal-service-key", "X-Request-ID"],
 )
+
+# Security headers on every response.
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    return response
 
 api_key_header = APIKeyHeader(name="x-internal-service-key", auto_error=False)
 
@@ -302,7 +317,8 @@ async def chat_async_endpoint(req: ChatRequest):
             thread_id=thread_id
         )
 
-    asyncio.get_event_loop().run_in_executor(None, _run_bg)
+    # get_event_loop() is deprecated inside a running loop in Python 3.10+.
+    asyncio.get_running_loop().run_in_executor(None, _run_bg)
 
     return AsyncChatStartResponse(
         run_id=run_record.run_id,
@@ -422,7 +438,10 @@ async def chat_endpoint(req: ChatRequest):
         memory_manager.add_user_message(thread_id, user_msg)
         memory_manager.add_ai_message(thread_id, reply_text)
 
-    history_count = len(memory_manager.get_history(thread_id))
+    # Use the length of the incoming history from PostgreSQL (req.history) as the
+    # authoritative turn counter — the in-memory manager resets on server restart
+    # and would show 0 after a restart even though many turns exist in the DB.
+    history_count = len(req.history or []) + 2  # +2 for current user + AI turn
 
     return ChatResponse(
         reply=str(reply_text),

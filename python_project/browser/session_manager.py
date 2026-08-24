@@ -10,7 +10,9 @@ from browser.playwright_worker import playwright_worker
 
 DEFAULT_CDP_URL = os.environ.get("BROWSER_CDP_URL", "http://127.0.0.1:9222")
 IDLE_TIMEOUT_SECONDS = int(os.environ.get("BROWSER_IDLE_TIMEOUT", "1800"))  # 30 mins
-DEFAULT_HEADLESS = os.environ.get("BROWSER_HEADLESS", "true").lower() == "true"
+# Default to visible browser so users can see the automated window.
+# Set BROWSER_HEADLESS=true in production / CI environments that have no display.
+DEFAULT_HEADLESS = os.environ.get("BROWSER_HEADLESS", "false").lower() == "true"
 
 class UserBrowserSession:
     """Represents an isolated browser session belonging to a specific user."""
