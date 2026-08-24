@@ -65,6 +65,8 @@ class AppErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBou
 const AppContent: React.FC = () => {
   const { 
     activeChat, 
+    activeChatId,
+    isLoadingMessages,
     appConfig, 
     isBrowserModalOpen,
     setIsBrowserModalOpen,
@@ -72,7 +74,7 @@ const AppContent: React.FC = () => {
     setActiveConfirmation,
     resolveBrowserConfirmation
   } = useChatContext();
-  const hasMessages = activeChat && activeChat.messages.length > 0;
+  const hasMessages = Boolean(activeChatId && (isLoadingMessages || (activeChat && activeChat.messages.length > 0)));
 
   return (
     <div className="app-viewport">

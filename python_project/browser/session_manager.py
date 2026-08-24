@@ -1,11 +1,5 @@
-"""Per-user Stagehand session lifecycle: connect (existing Chrome via CDP) or
-launch (managed local Chromium), track tabs, and disconnect/close cleanly.
-
-Everything here runs *inside* the coroutines submitted to `browser.async_worker`
-(the single background event-loop thread) — never call these methods directly
-from arbitrary threads without going through that worker.
-"""
 import os
+import time
 from typing import Dict, Optional
 
 from stagehand import Stagehand, local_browser
@@ -14,6 +8,7 @@ from browser.llm_bridge import nvidia_generate
 from browser.schema import BrowserMode, BrowserStatus, ConfirmationRequest, TabInfo
 
 DEFAULT_CDP_URL = os.getenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+DEFAULT_IDLE_TIMEOUT_SECONDS = float(os.getenv("BROWSER_IDLE_TIMEOUT_SECONDS", "300.0"))
 
 
 class UserBrowserSession:
@@ -26,6 +21,11 @@ class UserBrowserSession:
         self.mode: BrowserMode = BrowserMode.EXISTING_CDP
         self.cdp_endpoint: Optional[str] = None
         self.pending_confirmations: Dict[str, ConfirmationRequest] = {}
+        self.last_accessed_at: float = time.time()
+
+    def touch(self) -> None:
+        """Update last accessed timestamp on activity."""
+        self.last_accessed_at = time.time()
 
     @property
     def is_connected(self) -> bool:
@@ -38,6 +38,7 @@ class UserBrowserSession:
         self.stagehand = await Stagehand.create(browser=self.browser, model=nvidia_generate)
         self.mode = BrowserMode.EXISTING_CDP
         self.cdp_endpoint = cdp_url
+        self.touch()
 
     async def launch_managed(self, headless: bool = False) -> None:
         """Launch a fresh, Stagehand-managed local Chromium instance."""
@@ -46,6 +47,7 @@ class UserBrowserSession:
         self.stagehand = await Stagehand.create(browser=self.browser, model=nvidia_generate)
         self.mode = BrowserMode.MANAGED_BROWSER
         self.cdp_endpoint = None
+        self.touch()
 
     async def close(self) -> None:
         """Best-effort teardown of the Stagehand client and underlying browser handle."""
@@ -65,6 +67,7 @@ class UserBrowserSession:
     async def list_tabs(self) -> list:
         if not self.is_connected:
             return []
+        self.touch()
         pages = await self.browser.context.pages()
         active = await self.browser.context.active_page()
         active_id = active.page_id if active else None
@@ -105,10 +108,24 @@ class BrowserSessionManager:
         if session is None:
             session = UserBrowserSession(user_id)
             self._sessions[user_id] = session
+        session.touch()
         return session
 
     def get(self, user_id: int) -> Optional[UserBrowserSession]:
-        return self._sessions.get(user_id)
+        session = self._sessions.get(user_id)
+        if session:
+            session.touch()
+        return session
+
+    async def reap_idle_sessions(self, idle_timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS) -> int:
+        """Reap and close any sessions that have been idle for longer than the idle timeout."""
+        now = time.time()
+        reaped_count = 0
+        for session in list(self._sessions.values()):
+            if session.is_connected and (now - session.last_accessed_at) > idle_timeout_seconds:
+                await session.close()
+                reaped_count += 1
+        return reaped_count
 
 
 browser_session_manager = BrowserSessionManager()

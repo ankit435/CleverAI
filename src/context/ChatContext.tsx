@@ -28,6 +28,9 @@ interface ChatContextType {
   activeChatId: string | null;
   activeChat: ChatThread | null;
   setActiveChatId: (id: string | null) => void;
+  selectChat: (id: string) => Promise<void>;
+  isConversationsLoading: boolean;
+  isLoadingMessages: boolean;
   createNewChat: () => void;
   deleteChat: (id: string) => Promise<void>;
   clearAllChats: () => Promise<void>;
@@ -180,6 +183,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<ChatCategory | 'all'>('all');
+  const [isConversationsLoading, setIsConversationsLoading] = useState(false);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const activeStreamRef = React.useRef<{ controller: AbortController; runId: string; threadId: string; aiMsgId: string } | null>(null);
+
+  const stopGenerating = useCallback(() => {
+    const active = activeStreamRef.current;
+    if (!active) return;
+    active.controller.abort();
+    apiClient.chat.cancelRun(active.runId).catch(() => {});
+    activeStreamRef.current = null;
+    setIsGenerating(false);
+  }, []);
 
   // Save isolated user chats
   useEffect(() => {
@@ -194,7 +210,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const activeChat = chats.find(c => c.id === activeChatId) || null;
 
-  // Load isolated user conversations from PostgreSQL backend
+  // Load isolated user conversations from PostgreSQL backend - Fast single-call title list!
   const loadConversations = useCallback(async (targetUserId?: string | number) => {
     const token = localStorage.getItem('clever_jwt_token');
     if (!token) {
@@ -203,43 +219,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    setIsConversationsLoading(true);
     try {
       const res = await apiClient.conversations.list({ limit: 50 });
       if (res && Array.isArray(res.conversations)) {
-        const loadedThreads: ChatThread[] = await Promise.all(
-          res.conversations.map(async (c: any) => {
-            try {
-              const detail = await apiClient.conversations.get(c.id);
-              const msgs: Message[] = (detail.conversation?.messages || []).map((m: any) => ({
-                id: m.id,
-                sender: m.sender,
-                text: m.text,
-                timestamp: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                toolResults: m.metadata?.toolResults,
-                isStreaming: false
-              }));
-              return {
-                id: c.id,
-                title: c.title,
-                category: (c.category as ChatCategory) || 'favorites',
-                createdAt: c.createdAt,
-                updatedAt: c.updatedAt,
-                activePluginIds: ['web-search', 'code-interpreter', 'dalle3-image'],
-                messages: msgs
-              };
-            } catch {
-              return {
-                id: c.id,
-                title: c.title,
-                category: (c.category as ChatCategory) || 'favorites',
-                createdAt: c.createdAt,
-                updatedAt: c.updatedAt,
-                activePluginIds: ['web-search', 'code-interpreter', 'dalle3-image'],
-                messages: []
-              };
-            }
-          })
-        );
+        // Fast, single-call lightweight conversation load!
+        const loadedThreads: ChatThread[] = res.conversations.map((c: any) => ({
+          id: c.id,
+          title: c.title || 'Conversation',
+          category: (c.category as ChatCategory) || 'favorites',
+          createdAt: c.createdAt,
+          updatedAt: c.updatedAt,
+          activePluginIds: ['web-search', 'code-interpreter', 'dalle3-image'],
+          messages: [],
+          isMessagesLoaded: false
+        }));
+
         setChats(loadedThreads);
         const uid = targetUserId || userSession.id;
         if (uid) {
@@ -248,8 +243,69 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (err) {
       console.warn('Load user conversations note:', err);
+    } finally {
+      setIsConversationsLoading(false);
     }
   }, [userSession.id]);
+
+  // Lazy-load full conversation messages on-demand upon user click/selection
+  const selectChat = useCallback(async (id: string) => {
+    // If switching away from a conversation with an active in-flight SSE stream, abort client SSE and signal backend cancel
+    if (activeStreamRef.current && activeStreamRef.current.threadId !== id) {
+      stopGenerating();
+    }
+
+    setActiveChatId(id);
+    const targetChat = chats.find(c => c.id === id);
+
+    // If chat messages are already loaded in memory, no additional network request needed
+    if (targetChat && targetChat.isMessagesLoaded && targetChat.messages.length > 0) {
+      return;
+    }
+
+    setIsLoadingMessages(true);
+    try {
+      const detail = await apiClient.conversations.get(id);
+      if (detail && detail.conversation) {
+        const msgs: Message[] = (detail.conversation.messages || []).map((m: any) => ({
+          id: m.id,
+          sender: m.sender,
+          text: m.text,
+          timestamp: new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          toolResults: m.toolResults || m.metadata?.toolResults,
+          isStreaming: false
+        }));
+
+        setChats(prev =>
+          prev.map(c =>
+            c.id === id
+              ? {
+                  ...c,
+                  title: detail.conversation.title || c.title,
+                  messages: msgs,
+                  isMessagesLoaded: true
+                }
+              : c
+          )
+        );
+      }
+    } catch (err) {
+      console.warn('Lazy load conversation messages error:', err);
+    } finally {
+      setIsLoadingMessages(false);
+    }
+  }, [chats, stopGenerating]);
+
+  const handleSetActiveChatId = useCallback((id: string | null) => {
+    if (id) {
+      selectChat(id);
+    } else {
+      if (activeStreamRef.current) {
+        stopGenerating();
+      }
+      setActiveChatId(null);
+    }
+  }, [selectChat, stopGenerating]);
 
   // Load plugins dynamically
   const [plugins, setPlugins] = useState<Plugin[]>(() => {
@@ -518,19 +574,6 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Message Sending via Central apiClient — async REST kickoff + live SSE progress.
-  const [isGenerating, setIsGenerating] = useState(false);
-  const activeStreamRef = React.useRef<{ controller: AbortController; runId: string; threadId: string; aiMsgId: string } | null>(null);
-
-  const stopGenerating = () => {
-    const active = activeStreamRef.current;
-    if (!active) return;
-    active.controller.abort();
-    apiClient.chat.cancelRun(active.runId).catch(() => {});
-    activeStreamRef.current = null;
-    setIsGenerating(false);
-  };
-
   const updateAiMessage = (threadId: string, aiMsgId: string, patch: Partial<Message>) => {
     setChats(prev =>
       prev.map(c =>
@@ -728,7 +771,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         chats,
         activeChatId,
         activeChat,
-        setActiveChatId,
+        setActiveChatId: handleSetActiveChatId,
+        selectChat,
+        isConversationsLoading,
+        isLoadingMessages,
         createNewChat,
         deleteChat,
         clearAllChats,

@@ -1415,3 +1415,32 @@ input:checked + .slider:before {
   background: rgba(99, 102, 241, 0.6);
 }
 
+/* Modern Skeleton Shimmer Animations */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-box {
+  background: linear-gradient(90deg, var(--bg-hover, rgba(255,255,255,0.05)) 25%, var(--border-light, rgba(255,255,255,0.12)) 50%, var(--bg-hover, rgba(255,255,255,0.05)) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite ease-in-out;
+  border-radius: 6px;
+}
+
+.sidebar-skeleton-list {
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-skeleton-item {
+  height: 28px;
+  border-radius: 6px;
+}
+

@@ -73,6 +73,16 @@ class BrowserService:
         except Exception as exc:
             return False, f"Disconnect error: {exc}"
 
+    def reap_idle_sessions(self, idle_timeout_seconds: float = 300.0) -> int:
+        """Close inactive browser sessions exceeding idle timeout to save resources."""
+        async def _do():
+            return await self.session_manager.reap_idle_sessions(idle_timeout_seconds)
+
+        try:
+            return async_worker.run(_do)
+        except Exception:
+            return 0
+
     def get_status(self, user_id: int = 1) -> BrowserStatus:
         async def _do():
             session = self.session_manager.get(user_id)

@@ -21,7 +21,7 @@ import {
 const animatedMessageIds = new Set<string>();
 
 export const ChatFeed: React.FC = () => {
-  const { activeChat, isGenerating, appConfig, userSession, sendMessage } = useChatContext();
+  const { activeChat, isGenerating, isLoadingMessages, appConfig, userSession, sendMessage } = useChatContext();
   const bottomRef = useRef<HTMLDivElement>(null);
   const currentChatIdRef = useRef<string | null>(null);
 
@@ -43,6 +43,42 @@ export const ChatFeed: React.FC = () => {
     }, 50);
     return () => clearTimeout(scrollTimer);
   }, [activeChat?.messages?.length, isGenerating, scrollToBottom]);
+
+  if (isLoadingMessages) {
+    return (
+      <div className="chat-messages-container" style={{ padding: '24px 16px', maxWidth: '800px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        {/* User Question Skeleton */}
+        <div className="message-bubble" style={{ display: 'flex', gap: '12px', opacity: 0.9 }}>
+          <div className="skeleton-box" style={{ width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0 }} />
+          <div className="message-content-wrapper" style={{ flex: 1, maxWidth: '65%' }}>
+            <div className="skeleton-box" style={{ width: '110px', height: '13px', marginBottom: '8px' }} />
+            <div className="skeleton-box" style={{ width: '100%', height: '38px', borderRadius: '12px' }} />
+          </div>
+        </div>
+
+        {/* AI Answer Skeleton */}
+        <div className="message-bubble" style={{ display: 'flex', gap: '12px', opacity: 0.95 }}>
+          <div className="skeleton-box" style={{ width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0 }} />
+          <div className="message-content-wrapper" style={{ flex: 1, maxWidth: '85%' }}>
+            <div className="skeleton-box" style={{ width: '150px', height: '13px', marginBottom: '10px' }} />
+            <div className="skeleton-box" style={{ width: '96%', height: '16px', marginBottom: '8px' }} />
+            <div className="skeleton-box" style={{ width: '90%', height: '16px', marginBottom: '8px' }} />
+            <div className="skeleton-box" style={{ width: '75%', height: '16px', marginBottom: '14px' }} />
+            <div className="skeleton-box" style={{ width: '40%', height: '32px', borderRadius: '8px' }} />
+          </div>
+        </div>
+
+        {/* User Follow-up Skeleton */}
+        <div className="message-bubble" style={{ display: 'flex', gap: '12px', opacity: 0.75 }}>
+          <div className="skeleton-box" style={{ width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0 }} />
+          <div className="message-content-wrapper" style={{ flex: 1, maxWidth: '50%' }}>
+            <div className="skeleton-box" style={{ width: '90px', height: '13px', marginBottom: '8px' }} />
+            <div className="skeleton-box" style={{ width: '100%', height: '32px', borderRadius: '12px' }} />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!activeChat) return null;
 
