@@ -1,3 +1,5 @@
+
+
 """Unified Browser Service Facade (Stagehand-backed).
 
 Sync-callable facade over the async Stagehand session manager: every public
@@ -167,7 +169,7 @@ class BrowserService:
     # ------------------------------------------------------------------ #
     # Core Stagehand actions: navigate / act / observe / extract
     # ------------------------------------------------------------------ #
-    def navigate(self, user_id: int, url: str) -> ActionResult:
+    def navigate(self, user_id: int, url: str, thread_id: Optional[str] = None) -> ActionResult:
         async def _do():
             start = time.time()
             clean_url = security_manager.normalize_url(url)
@@ -178,9 +180,7 @@ class BrowserService:
             session = self.session_manager.get_or_create(user_id)
             if not session.is_connected:
                 await session.launch_managed()
-            page = await session.browser.context.active_page()
-            if page is None:
-                page = await session.browser.context.new_page()
+            page = await session.get_page_for_thread(thread_id)
             await page.goto(clean_url)
             title = await page.title()
             final_url = await page.url()
@@ -194,7 +194,7 @@ class BrowserService:
         except Exception as exc:
             return ActionResult(action="navigate", status="error", message=f"Navigation failed: {exc}", error=str(exc))
 
-    def act(self, user_id: int, instruction: str, confirmed: bool = False) -> ActionResult:
+    def act(self, user_id: int, instruction: str, confirmed: bool = False, thread_id: Optional[str] = None) -> ActionResult:
         """Execute a natural-language browser action via Stagehand's `act()`."""
         # 1. Human Confirmation Security Gate — evaluated before ever touching Stagehand.
         risk_level, requires_confirm, reason = security_manager.assess_instruction_risk(instruction)
@@ -208,6 +208,7 @@ class BrowserService:
                 risk_level=risk_level, status="pending", expires_at=expires_at,
             )
             session.pending_confirmations[confirm_id] = confirm_req
+            session.confirmation_threads[confirm_id] = thread_id
             return ActionResult(
                 action="act", status="confirmation_required",
                 message=f"⚠️ Human Confirmation Required: {reason}. Approve action to proceed.",
@@ -219,8 +220,8 @@ class BrowserService:
             session = self.session_manager.get_or_create(user_id)
             if not session.is_connected:
                 await session.launch_managed()
-            result = await session.stagehand.act(instruction)
-            page = await session.browser.context.active_page()
+            page = await session.get_page_for_thread(thread_id)
+            result = await session.stagehand.act(instruction, page=page)
             url = await page.url() if page else None
             title = await page.title() if page else None
             return ActionResult(
@@ -234,14 +235,15 @@ class BrowserService:
         except Exception as exc:
             return ActionResult(action="act", status="error", message=f"Action failed: {exc}", error=str(exc))
 
-    def observe(self, user_id: int, instruction: Optional[str] = None) -> ActionResult:
+    def observe(self, user_id: int, instruction: Optional[str] = None, thread_id: Optional[str] = None) -> ActionResult:
         """Discover available actions/elements on the current page via Stagehand's `observe()`."""
         async def _do():
             start = time.time()
             session = self.session_manager.get_or_create(user_id)
             if not session.is_connected:
                 await session.launch_managed()
-            result = await session.stagehand.observe(instruction)
+            page = await session.get_page_for_thread(thread_id)
+            result = await session.stagehand.observe(instruction, page=page)
             candidates = [
                 {"description": getattr(a, "description", "") or "", "method": getattr(a, "method", "") or ""}
                 for a in result.data
@@ -257,7 +259,7 @@ class BrowserService:
         except Exception as exc:
             return ActionResult(action="observe", status="error", message=f"Observe failed: {exc}", error=str(exc))
 
-    def extract(self, user_id: int, instruction: str) -> ActionResult:
+    def extract(self, user_id: int, instruction: str, thread_id: Optional[str] = None) -> ActionResult:
         """Pull structured/free-text data from the current page via Stagehand's `extract()`."""
         async def _do():
             start = time.time()
@@ -308,12 +310,14 @@ class BrowserService:
             return ActionResult(action="confirm", status="error", message=f"Confirmation request '{confirmation_id}' not found or expired.", error="CONFIRMATION_NOT_FOUND")
 
         confirm_req = session.pending_confirmations.pop(confirmation_id)
+        thread_id = session.confirmation_threads.pop(confirmation_id, None)
         if not approved:
             confirm_req.status = "rejected"
             return ActionResult(action=confirm_req.instruction, status="error", message="Action was rejected by user.", error="CONFIRMATION_REJECTED", confirmation=confirm_req)
 
         confirm_req.status = "approved"
-        return self.act(user_id=user_id, instruction=confirm_req.instruction, confirmed=True)
+        return self.act(user_id=user_id, instruction=confirm_req.instruction, confirmed=True, thread_id=thread_id)
 
 
 browser_service = BrowserService()
+

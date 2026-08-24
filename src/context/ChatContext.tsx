@@ -197,6 +197,31 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsGenerating(false);
   }, []);
 
+  // If the user closes/refreshes the tab (or navigates away) while a run is
+  // still streaming, best-effort cancel it on the backend so it doesn't keep
+  // burning LLM/browser resources for a client that's no longer listening.
+  // `fetch(..., { keepalive: true })` is used (not sendBeacon) because it can
+  // carry the Authorization header the backend requires, and still survives
+  // page unload in modern browsers.
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const active = activeStreamRef.current;
+      if (!active) return;
+      const token = localStorage.getItem('clever_jwt_token');
+      try {
+        fetch(`${apiClient.baseUrl}/chat/runs/${active.runId}/cancel`, {
+          method: 'POST',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          keepalive: true
+        }).catch(() => {});
+      } catch {
+        // Best-effort only — ignore failures during unload.
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, []);
+
   // Save isolated user chats
   useEffect(() => {
     if (userSession.isLoggedIn && userSession.id) {
@@ -828,3 +853,4 @@ export const useChatContext = () => {
   if (!ctx) throw new Error('useChatContext must be used within ChatProvider');
   return ctx;
 };
+

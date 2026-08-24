@@ -1,3 +1,5 @@
+
+
 """FastAPI Microservice with Dynamic Tool Calling, RAG, and Browser AI Agent Platform."""
 import time
 from typing import Optional, List, Dict, Any
@@ -52,6 +54,31 @@ def verify_internal_key(header_val: str = Security(api_key_header)):
         raise HTTPException(status_code=403, detail="Forbidden: Invalid internal service authentication key")
     return header_val
 
+# ---------------------------------------------------------------------------
+# Browser idle-session reaper: a single shared Stagehand browser now persists
+# per user across turns/conversations (each conversation gets its own tab), so
+# it must be actively reaped after real inactivity instead of being closed
+# after every turn — otherwise browsers would leak for logged-in-but-idle users.
+# ---------------------------------------------------------------------------
+import asyncio as _asyncio
+
+_BROWSER_REAP_INTERVAL_SECONDS = float(os.getenv("BROWSER_REAP_INTERVAL_SECONDS", "60.0"))
+
+async def _browser_idle_reaper_loop():
+    loop = _asyncio.get_event_loop()
+    while True:
+        try:
+            await _asyncio.sleep(_BROWSER_REAP_INTERVAL_SECONDS)
+            # reap_idle_sessions() blocks on the Stagehand async-worker thread —
+            # run it off the main event loop so it never stalls request handling.
+            await loop.run_in_executor(None, browser_service.reap_idle_sessions)
+        except Exception:
+            pass  # Best-effort background maintenance — never crash the process.
+
+@app.on_event("startup")
+async def _start_browser_idle_reaper():
+    _asyncio.create_task(_browser_idle_reaper_loop())
+
 class ToolResult(BaseModel):
     toolId: str
     toolName: str
@@ -102,19 +129,23 @@ class BrowserTabCloseRequest(BaseModel):
 class BrowserNavigateRequest(BaseModel):
     url: str
     userId: Optional[int] = Field(default=1)
+    threadId: Optional[str] = Field(default=None, description="Conversation id — keeps this navigation on that conversation's own tab")
 
 class BrowserActRequest(BaseModel):
     instruction: str = Field(..., description="Plain natural-language action, e.g. 'click the Sign In button'")
     confirmed: Optional[bool] = False
     userId: Optional[int] = Field(default=1)
+    threadId: Optional[str] = Field(default=None, description="Conversation id — keeps this action on that conversation's own tab")
 
 class BrowserObserveRequest(BaseModel):
     instruction: Optional[str] = None
     userId: Optional[int] = Field(default=1)
+    threadId: Optional[str] = Field(default=None)
 
 class BrowserExtractRequest(BaseModel):
     instruction: str = Field(..., description="What information to extract from the current page")
     userId: Optional[int] = Field(default=1)
+    threadId: Optional[str] = Field(default=None)
 
 class BrowserConfirmRequest(BaseModel):
     confirmation_id: str
@@ -220,25 +251,25 @@ def browser_close_tab(req: BrowserTabCloseRequest):
 @app.post("/api/v1/browser/navigate")
 def browser_navigate_route(req: BrowserNavigateRequest):
     """Navigate the browser to a URL (Stagehand-managed)."""
-    res = browser_service.navigate(user_id=req.userId, url=req.url)
+    res = browser_service.navigate(user_id=req.userId, url=req.url, thread_id=req.threadId)
     return res.model_dump()
 
 @app.post("/api/v1/browser/act")
 def browser_act_route(req: BrowserActRequest):
     """Perform a natural-language action on the current page, with Human Confirmation Security Gate."""
-    res = browser_service.act(user_id=req.userId, instruction=req.instruction, confirmed=req.confirmed)
+    res = browser_service.act(user_id=req.userId, instruction=req.instruction, confirmed=req.confirmed, thread_id=req.threadId)
     return res.model_dump()
 
 @app.post("/api/v1/browser/observe")
 def browser_observe_route(req: BrowserObserveRequest):
     """Discover actionable elements on the current page."""
-    res = browser_service.observe(user_id=req.userId, instruction=req.instruction)
+    res = browser_service.observe(user_id=req.userId, instruction=req.instruction, thread_id=req.threadId)
     return res.model_dump()
 
 @app.post("/api/v1/browser/extract")
 def browser_extract_route(req: BrowserExtractRequest):
     """Extract structured/free-text data from the current page."""
-    res = browser_service.extract(user_id=req.userId, instruction=req.instruction)
+    res = browser_service.extract(user_id=req.userId, instruction=req.instruction, thread_id=req.threadId)
     return res.model_dump()
 
 @app.post("/api/v1/browser/confirm")
@@ -460,3 +491,4 @@ async def chat_endpoint(req: ChatRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=settings.host, port=settings.port)
+

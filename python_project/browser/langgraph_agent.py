@@ -1,3 +1,4 @@
+
 """LangGraph Autonomous Browser Agent, powered by Stagehand's `act`/`observe`/
 `extract`/navigate AI-native primitives instead of hand-rolled selector/element
 tooling. Same StateGraph shape (deterministic loop, `finish_task` terminal
@@ -16,6 +17,7 @@ from langgraph.graph import END, StateGraph
 from agent.async_manager import AgentRunState, async_agent_manager
 from agent.handoff import bind_handoff_tools
 from agent.prompts import CONCISE_FINAL_ANSWER_DIRECTIVE
+from browser.context import get_current_thread_id, get_current_user_id
 from browser.schema import BrowserMode, PolicyStrategy
 from browser.security_manager import security_manager
 from browser.service import browser_service
@@ -36,7 +38,7 @@ def browser_navigate(url: str) -> str:
     Args:
         url: Destination web address.
     """
-    res = browser_service.navigate(user_id=1, url=url)
+    res = browser_service.navigate(user_id=get_current_user_id(), url=url, thread_id=get_current_thread_id())
     return res.message
 
 
@@ -50,7 +52,7 @@ def browser_act(instruction: str) -> str:
     Args:
         instruction: A precise, single natural-language action to perform.
     """
-    res = browser_service.act(user_id=1, instruction=instruction)
+    res = browser_service.act(user_id=get_current_user_id(), instruction=instruction, thread_id=get_current_thread_id())
     if res.status == "confirmation_required":
         return (
             f"⚠️ This action requires human confirmation before it can proceed: {res.message}\n"
@@ -69,7 +71,7 @@ def browser_observe(instruction: Optional[str] = None) -> str:
     Args:
         instruction: Optional focus hint for what kind of elements to look for.
     """
-    res = browser_service.observe(user_id=1, instruction=instruction)
+    res = browser_service.observe(user_id=get_current_user_id(), instruction=instruction, thread_id=get_current_thread_id())
     return res.message
 
 
@@ -82,7 +84,7 @@ def browser_extract(instruction: str) -> str:
     Args:
         instruction: What information to extract from the page.
     """
-    res = browser_service.extract(user_id=1, instruction=instruction)
+    res = browser_service.extract(user_id=get_current_user_id(), instruction=instruction, thread_id=get_current_thread_id())
     return res.message
 
 
@@ -310,3 +312,4 @@ def run_langgraph_browser_agent(
     except Exception as e:
         async_agent_manager.complete_run(actual_run_id, str(e), [], error=str(e))
         raise e
+

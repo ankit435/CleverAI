@@ -1,3 +1,4 @@
+
 """Multi-Agent Tool Orchestrator: General specialist agent (research, code, image,
 calculator, documents, dynamic tools) plus supervisor-driven delegation to the
 Browser Agent and Sandbox Agent specialists."""
@@ -8,8 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage
 from config import settings
 from models import get_chat_model, invoke_llm_with_diagnostics, LLMTimeoutError, LLMCancelledError
-from browser.context import set_current_user_id
-from browser.schema import BrowserMode
+from browser.context import set_current_user_id, set_current_thread_id
 from agent.async_manager import (
     async_agent_manager, AgentRunState, LLM_REQUEST_TIMEOUT,
     BROWSER_ACTION_TIMEOUT, INDIVIDUAL_TOOL_TIMEOUT, AGENT_TOTAL_RUN_TIMEOUT
@@ -125,21 +125,6 @@ def synthesize_tool_results_into_markdown(user_prompt: str, tool_results_list: L
     return "\n".join(sections).strip()
 
 
-def _maybe_close_auto_browser(user_id: int, was_connected_before: bool) -> None:
-    """
-    If the agent auto-launched a managed Playwright browser for this run
-    (i.e. it was not already connected when the run started) close it now
-    so the desktop is clean after every task.
-    CDP-connected user browsers are NEVER closed here.
-    """
-    try:
-        session = browser_service.session_manager.get(user_id)
-        if session and session.is_connected and session.mode == BrowserMode.MANAGED_BROWSER and not was_connected_before:
-            browser_service.disconnect(user_id=user_id)
-    except Exception:
-        pass  # Best-effort — never let cleanup crash the caller
-
-
 def execute_tool_calling_flow(
     user_prompt: str,
     active_plugin_ids: List[str],
@@ -164,9 +149,13 @@ def execute_tool_calling_flow(
     mid-run via the handoff tools in `agent.handoff` — routing only decides who starts,
     not who is allowed to help finish.
     """
-    # 0. Bind the authenticated user_id to this execution context so that all
-    #    browser/sandbox tools (which may run in shared worker threads) pick it up automatically.
+    # 0. Bind the authenticated user_id + conversation thread_id to this execution
+    #    context so that all browser/sandbox tools (which may run in shared worker
+    #    threads) pick them up automatically — this is what lets the Browser Agent
+    #    give each conversation its own dedicated TAB inside ONE shared browser,
+    #    instead of spawning a new browser instance per turn/conversation.
     set_current_user_id(user_id)
+    set_current_thread_id(thread_id)
 
     # 1. Register/ resume the AgentRun record up-front so every route (including the
     #    delegated specialist agents) shares one consistent run_id for observability.
@@ -209,10 +198,6 @@ def execute_tool_calling_flow(
     # on-demand delegation to the Browser/Sandbox/Research specialists).
     # ==========================================================================
     async_agent_manager.set_state(run_id, AgentRunState.RUNNING)
-
-    # Record connection state so _maybe_close_auto_browser can clean up any browser
-    # session that gets auto-launched indirectly via a mid-run 'delegate_to_browser_agent' call.
-    _pre_run_browser_connected = browser_service.get_status(user_id=user_id).connected
 
     llm = get_chat_model(model_name=model_name)
 
@@ -455,9 +440,12 @@ def execute_tool_calling_flow(
                 async_agent_manager.complete_run(run_id, str(e), tool_results_list, error=str(e))
                 raise e
         finally:
-            # Auto-close any managed browser that was spawned exclusively for
-            # this task. CDP-connected user browsers are left untouched.
-            _maybe_close_auto_browser(user_id, _pre_run_browser_connected)
+            # NOTE: The managed browser is intentionally NOT auto-closed here anymore.
+            # One shared Stagehand browser now persists per user across turns/conversations
+            # (each conversation gets its own tab via get_current_thread_id()), and is only
+            # ever torn down by the idle-timeout reaper (browser_service.reap_idle_sessions,
+            # scheduled in app.py) after real inactivity — never after a single turn.
+            pass
 
     # 5. Deterministic fallback (strictly 0ms execution, no secondary LLM invoke)
     lower = user_prompt.lower()
@@ -488,3 +476,5 @@ def execute_tool_calling_flow(
 
     async_agent_manager.complete_run(run_id, "Unable to complete request.", tool_results_list, error="EXECUTION_FAILED")
     return "Unable to complete request.", tool_results_list, "AI Agent Error"
+
+

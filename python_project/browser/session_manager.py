@@ -21,7 +21,12 @@ class UserBrowserSession:
         self.mode: BrowserMode = BrowserMode.EXISTING_CDP
         self.cdp_endpoint: Optional[str] = None
         self.pending_confirmations: Dict[str, ConfirmationRequest] = {}
+        self.confirmation_threads: Dict[str, Optional[str]] = {}
         self.last_accessed_at: float = time.time()
+        # Maps conversation thread_id -> Stagehand page_id, so each conversation
+        # gets its own dedicated tab inside this ONE shared browser instance
+        # instead of spawning a new browser (or fighting over one page) per turn.
+        self.thread_tabs: Dict[str, str] = {}
 
     def touch(self) -> None:
         """Update last accessed timestamp on activity."""
@@ -63,6 +68,7 @@ class UserBrowserSession:
             except Exception:
                 pass
             self.browser = None
+        self.thread_tabs.clear()
 
     async def list_tabs(self) -> list:
         if not self.is_connected:
@@ -81,6 +87,41 @@ class UserBrowserSession:
             tabs.append(TabInfo(id=page.page_id, title=title or "Untitled", url=url or "about:blank", active=(page.page_id == active_id)))
         return tabs
 
+    async def get_page_for_thread(self, thread_id: Optional[str]):
+        """
+        Return the dedicated tab (page) for a given conversation, creating one on
+        first use and switching it to active. If no thread_id is supplied, falls
+        back to whatever tab is currently active (or creates one).
+
+        Conversations never spawn a new browser — they only ever get their own
+        TAB inside this one shared per-user browser instance. If the user
+        manually closed that tab in their real browser, a fresh one is
+        transparently recreated and re-bound to the same thread_id.
+        """
+        pages = await self.browser.context.pages()
+        page_by_id = {p.page_id: p for p in pages}
+
+        if thread_id:
+            existing_page_id = self.thread_tabs.get(thread_id)
+            if existing_page_id and existing_page_id in page_by_id:
+                page = page_by_id[existing_page_id]
+                await self.browser.context.set_active_page(page)
+                self.touch()
+                return page
+
+        # No tab bound yet for this conversation (or it was closed) — reuse an
+        # unbound existing tab if one exists, otherwise open a fresh one.
+        bound_ids = set(self.thread_tabs.values())
+        unbound_page = next((p for p in pages if p.page_id not in bound_ids), None)
+        page = unbound_page or await self.browser.context.new_page()
+        await self.browser.context.set_active_page(page)
+
+        if thread_id:
+            self.thread_tabs[thread_id] = page.page_id
+
+        self.touch()
+        return page
+
     async def get_status(self) -> BrowserStatus:
         if not self.is_connected:
             return BrowserStatus(connected=False, user_id=self.user_id, mode=self.mode)
@@ -95,6 +136,10 @@ class UserBrowserSession:
             tabs=tabs,
             user_id=self.user_id,
         )
+
+    def unbind_thread(self, thread_id: str) -> None:
+        """Forget a conversation's dedicated tab mapping (does not close the tab)."""
+        self.thread_tabs.pop(thread_id, None)
 
 
 class BrowserSessionManager:
@@ -129,3 +174,5 @@ class BrowserSessionManager:
 
 
 browser_session_manager = BrowserSessionManager()
+
+
