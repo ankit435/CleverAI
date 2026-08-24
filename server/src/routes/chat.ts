@@ -96,6 +96,42 @@ chatRouter.get('/runs/:runId', async (req: AuthenticatedRequest, res: Response) 
       }
     } catch {}
 
+    const isCompleted = pyState?.status === 'completed' || pyState?.status === 'COMPLETED' || agentRun.status === 'completed';
+    const replyText = agentRun.response || pyState?.reply || null;
+
+    // Backfill AI message in PostgreSQL if completed but not yet saved
+    if (isCompleted && replyText) {
+      try {
+        const existingAi = await prisma.message.findFirst({
+          where: {
+            threadId: agentRun.threadId,
+            sender: 'ai',
+            createdAt: { gte: agentRun.startedAt }
+          }
+        });
+        if (!existingAi) {
+          await prisma.message.create({
+            data: {
+              threadId: agentRun.threadId,
+              sender: 'ai',
+              text: replyText,
+              toolResults: pyState?.tool_results || undefined
+            }
+          });
+          await prisma.agentRun.update({
+            where: { id: agentRun.id },
+            data: { response: replyText, status: 'completed', completedAt: new Date() }
+          });
+          await prisma.chatThread.update({
+            where: { id: agentRun.threadId },
+            data: { updatedAt: new Date() }
+          });
+        }
+      } catch (err: any) {
+        console.warn('Status poll message persistence note:', err.message);
+      }
+    }
+
     return res.json({
       runId: agentRun.id,
       threadId: agentRun.threadId,
@@ -103,7 +139,7 @@ chatRouter.get('/runs/:runId', async (req: AuthenticatedRequest, res: Response) 
       currentAction: pyState?.current_action || null,
       iteration: pyState?.iteration || 0,
       executionTimeMs: agentRun.executionTimeMs || pyState?.execution_time_ms || 0,
-      reply: agentRun.response || pyState?.reply || null,
+      reply: replyText,
       error: agentRun.error || pyState?.error || null,
       toolCalls: agentRun.toolCalls || [],
       diagnostics: pyState?.diagnostics || [],
@@ -141,12 +177,73 @@ chatRouter.get('/runs/:runId/events', async (req: AuthenticatedRequest, res: Res
         return res.end();
       }
 
-      // Proxy stream chunks to client
+      // Proxy stream chunks to client and parse completed event to persist AI message in PostgreSQL
       const reader = pyRes.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         res.write(value);
+
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+
+        for (const block of blocks) {
+          const dataLine = block.split('\n').find(l => l.startsWith('data: '));
+          if (dataLine) {
+            try {
+              const event = JSON.parse(dataLine.slice(6));
+              if (event.type === 'completed' && event.reply) {
+                // 1. Persist AI assistant message to PostgreSQL
+                await prisma.message.create({
+                  data: {
+                    threadId: agentRun.threadId,
+                    sender: 'ai',
+                    text: event.reply,
+                    toolResults: event.tool_results?.length ? event.tool_results : undefined
+                  }
+                }).catch(e => console.warn('Async AI message persistence error:', e.message));
+
+                // 2. Persist tool calls
+                if (event.tool_results && Array.isArray(event.tool_results)) {
+                  for (const tool of event.tool_results) {
+                    await prisma.toolCall.create({
+                      data: {
+                        agentRunId: agentRun.id,
+                        toolId: tool.toolId || 'unknown-tool',
+                        toolName: tool.toolName || 'AI Tool',
+                        status: tool.status || 'success',
+                        input: { prompt: agentRun.prompt },
+                        output: tool.data || {},
+                        executionTimeMs: tool.executionTimeMs || 0,
+                        completedAt: new Date()
+                      }
+                    }).catch(() => {});
+                  }
+                }
+
+                // 3. Update agentRun record
+                await prisma.agentRun.update({
+                  where: { id: agentRun.id },
+                  data: {
+                    response: event.reply,
+                    status: 'completed',
+                    completedAt: new Date()
+                  }
+                }).catch(() => {});
+
+                // 4. Update chatThread updatedAt
+                await prisma.chatThread.update({
+                  where: { id: agentRun.threadId },
+                  data: { updatedAt: new Date() }
+                }).catch(() => {});
+              }
+            } catch {}
+          }
+        }
       }
       res.end();
     } catch (streamErr: any) {

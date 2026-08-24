@@ -159,6 +159,41 @@ conversationsRouter.get('/:id', async (req: AuthenticatedRequest, res: Response)
       return res.status(404).json({ error: 'Conversation not found or access denied' });
     }
 
+    // Backfill any completed agent runs that had not yet been recorded as AI messages in the thread
+    const hasAiMessage = conversation.messages.some(m => m.sender === 'ai');
+    if (!hasAiMessage) {
+      const completedRuns = await prisma.agentRun.findMany({
+        where: {
+          threadId: conversationId,
+          userId,
+          response: { not: null }
+        },
+        include: { toolCalls: true },
+        orderBy: { startedAt: 'asc' }
+      });
+
+      for (const run of completedRuns) {
+        if (run.response) {
+          const aiMsg = await prisma.message.create({
+            data: {
+              threadId: conversationId,
+              sender: 'ai',
+              text: run.response,
+              toolResults: (run as any).toolCalls?.length ? (run as any).toolCalls.map((tc: any) => ({
+                toolId: tc.toolId,
+                toolName: tc.toolName,
+                status: tc.status,
+                executionTimeMs: tc.executionTimeMs,
+                data: tc.output
+              })) : undefined,
+              createdAt: run.completedAt || new Date()
+            }
+          });
+          conversation.messages.push(aiMsg);
+        }
+      }
+    }
+
     return res.json({
       conversation: {
         id: conversation.id,

@@ -30,6 +30,8 @@ export const Sidebar: React.FC = () => {
     chats,
     activeChatId,
     setActiveChatId,
+    selectChat,
+    isConversationsLoading,
     createNewChat,
     deleteChat,
     clearAllChats,
@@ -247,17 +249,28 @@ export const Sidebar: React.FC = () => {
                 </button>
               </div>
 
-              {filteredChats.map(c => (
-                <div
-                  key={c.id}
-                  className={`nav-item ${activeChatId === c.id ? 'active' : ''}`}
-                  onClick={() => {
-                    if (editingChatId === c.id) return;
-                    setActiveChatId(c.id);
-                    setSidebarOpen(false);
-                  }}
-                  style={{ fontSize: '13px', padding: '7px 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-                >
+              {isConversationsLoading && chats.length === 0 ? (
+                <div className="sidebar-skeleton-list">
+                  {[1, 2, 3, 4].map(idx => (
+                    <div key={idx} className="skeleton-box sidebar-skeleton-item" style={{ opacity: 0.7 - idx * 0.1 }} />
+                  ))}
+                </div>
+              ) : filteredChats.length === 0 ? (
+                <div style={{ padding: '12px 10px', fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                  No conversations found
+                </div>
+              ) : (
+                filteredChats.map(c => (
+                  <div
+                    key={c.id}
+                    className={`nav-item ${activeChatId === c.id ? 'active' : ''}`}
+                    onClick={() => {
+                      if (editingChatId === c.id) return;
+                      selectChat(c.id);
+                      setSidebarOpen(false);
+                    }}
+                    style={{ fontSize: '13px', padding: '7px 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                  >
                   {editingChatId === c.id ? (
                     <form onSubmit={(e) => handleSaveRename(c.id, e)} style={{ display: 'flex', alignItems: 'center', flex: 1, gap: '4px' }}>
                       <input
@@ -347,7 +360,7 @@ export const Sidebar: React.FC = () => {
                     </>
                   )}
                 </div>
-              ))}
+              )))}
             </div>
           )}
         </div>

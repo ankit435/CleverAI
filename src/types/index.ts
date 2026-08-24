@@ -82,6 +82,7 @@ export interface ChatThread {
   createdAt: string;
   updatedAt: string;
   activePluginIds: string[];
+  isMessagesLoaded?: boolean;
 }
 
 export interface PromptTemplate {
