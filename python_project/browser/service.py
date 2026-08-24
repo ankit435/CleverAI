@@ -299,6 +299,36 @@ class BrowserService:
                 return PageController.generic_search(page, query=text_input or "")
             elif act == "snapshot":
                 return self.snapshot(user_id, tab_id)
+            # ---- New actions ----
+            elif act == "select_option" and text_input:
+                return PageController.select_option(page, value=text_input, selector=selector, element_id=element_id)
+            elif act == "double_click":
+                return PageController.double_click(page, selector=selector, element_id=element_id, text=text_input)
+            elif act == "evaluate_js" and text_input:
+                return PageController.evaluate_js(page, js_code=text_input)
+            elif act == "reload":
+                return PageController.reload(page)
+            elif act == "get_attribute" and key:
+                return PageController.get_attribute(page, attribute=key, selector=selector, element_id=element_id)
+            elif act == "drag_drop" and selector and url:
+                # selector = source CSS selector, url param reused for target selector
+                return PageController.drag_drop(page, source_selector=selector, target_selector=url)
+            elif act == "upload_file" and text_input:
+                return PageController.upload_file(page, file_path=text_input, selector=selector, element_id=element_id)
+            elif act == "mouse_scroll":
+                # pixels param reused as delta_y; direction param reused to carry x,y as "x,y" string
+                delta_y = float(pixels) if direction.lower() != "up" else -float(pixels)
+                # Parse optional coordinates from text_input e.g. "400,300"
+                cx: Optional[float] = None
+                cy: Optional[float] = None
+                if text_input and "," in text_input:
+                    try:
+                        parts = text_input.split(",", 1)
+                        cx, cy = float(parts[0].strip()), float(parts[1].strip())
+                    except Exception:
+                        pass
+                delta_x_val = 0.0
+                return PageController.mouse_scroll(page, x=cx, y=cy, delta_x=delta_x_val, delta_y=delta_y)
             else:
                 return ActionResult(
                     action=action,

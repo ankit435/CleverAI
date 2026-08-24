@@ -14,9 +14,12 @@ DANGEROUS_ACTIONS = {
 }
 
 BLOCKED_HOSTS = {
-    "169.254.169.254", # Cloud metadata endpoint
-    "metadata.google.internal",
-    "instance-data"
+    "169.254.169.254",          # AWS / Azure / GCP instance metadata
+    "metadata.google.internal",  # GCP metadata
+    "metadata.internal",
+    "instance-data",
+    "169.254.170.2",            # ECS task metadata
+    "fd00:ec2::254",            # AWS IPv6 metadata
 }
 
 SECRET_PATTERNS = [
@@ -29,10 +32,17 @@ SECRET_PATTERNS = [
 ]
 
 LINK_SHORTENERS = {
-    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly", "adf.ly", "bit.do"
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly",
+    "adf.ly", "bit.do", "short.url", "rebrand.ly", "cutt.ly", "tiny.cc",
+    "yourls.org", "snip.ly", "bl.ink", "go2.me", "v.gd", "qr.net",
+    "mcaf.ee", "su.pr", "dfl.mn",
 }
 
 IPV4_PATTERN = re.compile(r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
+# AWS Shared / ECS Link-local
+_AWS_172_RE = re.compile(r"^172\.(1[6-9]|2[0-9]|3[01])\.")
+# Carrier-grade NAT shared address space (RFC 6598)
+_CGNAT_RE = re.compile(r"^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.")  # 100.64-127.x
 
 class BrowserSecurityManager:
     """Centralized security enforcer for browser operations and prompt grounding."""
@@ -43,13 +53,17 @@ class BrowserSecurityManager:
     @staticmethod
     def normalize_url(raw_url: str) -> str:
         """
-        Ensures a URL has a valid protocol prefix without storing or hardcoding any specific site URLs.
+        Normalise a URL to a safe absolute https:// form.
+        Rejects path-traversal patterns and bare IP strings.
         """
         if not raw_url:
             return "about:blank"
         cleaned = raw_url.strip()
         if cleaned in ("about:blank", "about:srcdoc"):
             return cleaned
+        # Block obvious path-traversal attempts before adding a scheme
+        if "../" in cleaned or "..\\" in cleaned:
+            return "about:blank"
         if cleaned.startswith(("http://", "https://", "file://", "chrome://")):
             return cleaned
         if "." in cleaned and " " not in cleaned:
@@ -85,9 +99,19 @@ class BrowserSecurityManager:
                 if not self.allow_local_network:
                     return False, f"Navigation to IP-literal host '{hostname}' is blocked."
 
-            # Block localhost & internal hosts
-            if not self.allow_local_network and (hostname in ("localhost", "127.0.0.1", "0.0.0.0") or hostname.startswith("192.168.") or hostname.startswith("10.") or hostname.endswith(".local") or hostname.endswith(".internal")):
-                return False, f"Local intranet navigation to '{hostname}' is blocked."
+            # Block localhost & RFC-1918 private ranges + AWS/GCP private ranges
+            if not self.allow_local_network:
+                if hostname in ("localhost", "127.0.0.1", "0.0.0.0"):
+                    return False, f"Local navigation to '{hostname}' is blocked."
+                if (
+                    hostname.startswith("192.168.")
+                    or hostname.startswith("10.")
+                    or hostname.endswith(".local")
+                    or hostname.endswith(".internal")
+                    or _AWS_172_RE.match(hostname)    # 172.16.0.0/12
+                    or _CGNAT_RE.match(hostname)      # 100.64.0.0/10
+                ):
+                    return False, f"Private/intranet navigation to '{hostname}' is blocked."
 
         return True, None
 
