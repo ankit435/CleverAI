@@ -625,10 +625,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const runId: string = startRes.runId;
       const finalThreadId: string = startRes.threadId || currentThreadId;
+
+      // Ensure the thread ID in the chats list and activeChatId stay in sync with the backend DB ID
       if (currentThreadId !== finalThreadId) {
+        setChats(prev =>
+          prev.map(c =>
+            c.id === currentThreadId
+              ? { ...c, id: finalThreadId }
+              : c
+          )
+        );
         setActiveChatId(finalThreadId);
+        currentThreadId = finalThreadId;
       }
-      updateAiMessage(currentThreadId, aiMsgId, { runId });
+
+      updateAiMessage(finalThreadId, aiMsgId, { runId });
 
       // 2. Subscribe to the live SSE progress stream for this exact run.
       await new Promise<void>((resolve) => {
@@ -636,16 +647,16 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
           runId,
           (event: any) => {
             if (event.type === 'state') {
-              updateAiMessage(currentThreadId!, aiMsgId, {
+              updateAiMessage(finalThreadId, aiMsgId, {
                 statusText: event.current_action || `Status: ${event.status}`
               });
             } else if (event.type === 'timing' && event.event?.tool) {
-              updateAiMessage(currentThreadId!, aiMsgId, {
+              updateAiMessage(finalThreadId, aiMsgId, {
                 statusText: `⚙️ ${event.event.tool} (${event.event.duration_ms}ms)`
               });
             } else if (event.type === 'completed') {
               const finalText = event.reply || 'Response received from AI server.';
-              updateAiMessage(currentThreadId!, aiMsgId, {
+              updateAiMessage(finalThreadId, aiMsgId, {
                 text: event.error && event.status !== 'COMPLETED' ? `⚠️ ${finalText}` : finalText,
                 toolResults: event.tool_results,
                 statusText: undefined,
@@ -654,7 +665,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
               activeStreamRef.current = null;
               resolve();
             } else if (event.type === 'error') {
-              updateAiMessage(currentThreadId!, aiMsgId, {
+              updateAiMessage(finalThreadId, aiMsgId, {
                 text: `⚠️ ${event.message || 'Agent stream error.'}`,
                 statusText: undefined,
                 isStreaming: false
@@ -668,7 +679,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             // final REST status poll so the user still gets a real result instead of hanging forever.
             apiClient.chat.getRunStatus(runId)
               .then((status: any) => {
-                updateAiMessage(currentThreadId!, aiMsgId, {
+                updateAiMessage(finalThreadId, aiMsgId, {
                   text: status.reply || '⚠️ Lost connection to the live agent stream, and no final reply was recorded.',
                   toolResults: status.toolCalls,
                   statusText: undefined,
@@ -676,7 +687,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 });
               })
               .catch(() => {
-                updateAiMessage(currentThreadId!, aiMsgId, {
+                updateAiMessage(finalThreadId, aiMsgId, {
                   text: '⚠️ Lost connection to the live agent stream and could not recover the final result.',
                   statusText: undefined,
                   isStreaming: false
@@ -685,7 +696,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
               .finally(() => resolve());
           }
         );
-        activeStreamRef.current = { controller, runId, threadId: currentThreadId!, aiMsgId };
+        activeStreamRef.current = { controller, runId, threadId: finalThreadId, aiMsgId };
       });
     } catch (err: any) {
       console.warn('API communication error:', err);
