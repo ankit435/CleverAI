@@ -18,6 +18,8 @@ from langgraph.graph import END, StateGraph
 from agent.async_manager import AgentRunState, async_agent_manager
 from agent.handoff import bind_handoff_tools
 from agent.prompts import CONCISE_FINAL_ANSWER_DIRECTIVE
+from agent.verification import verify_completion_claim
+from memory.persistent_store import get_facts_as_context
 from config import settings
 from models import LLMCancelledError, LLMTimeoutError, get_chat_model, invoke_llm_with_diagnostics
 from tools.sandbox_tools import ALL_SANDBOX_TOOLS
@@ -25,6 +27,16 @@ from tools.sandbox_tools import ALL_SANDBOX_TOOLS
 MAX_ITERATIONS = settings.sandbox_max_iterations
 
 SANDBOX_TOOL_MAP = {t.name: t for t in ALL_SANDBOX_TOOLS}
+
+# Maps the honest `status` argument the LLM passes to `finish_sandbox_task`
+# onto the run's true terminal state — never collapse every non-error outcome
+# into a blanket COMPLETED.
+STATUS_TO_RUN_STATE: Dict[str, AgentRunState] = {
+    "completed": AgentRunState.COMPLETED,
+    "partial": AgentRunState.PARTIAL,
+    "no_results": AgentRunState.NO_RESULTS,
+    "failed": AgentRunState.FAILED,
+}
 
 TOOL_DISPLAY_MAP: Dict[str, Tuple[str, str]] = {
     "execute_shell_command": ("sandbox-agent", "Sandbox Shell Execution"),
@@ -50,11 +62,14 @@ SYSTEM_INSTRUCTION_SANDBOX = (
     "for installs, filesystem operations, or running external programs.\n"
     "3. If a task needs live browser interaction or fresh web research, call "
     "'delegate_to_browser_agent' / 'delegate_to_research_agent' instead of guessing.\n"
-    "4. TERMINATION DISCIPLINE: once the task is verified complete, call "
-    "'finish_sandbox_task(result=...)' with the full user-facing Markdown summary — "
-    "including exact output/results observed. Only this output is shown to the user.\n"
+    "4. TERMINATION DISCIPLINE — CRITICAL: a command succeeding (exit code 0 / no exception) does "
+    "NOT mean the user's goal is complete. Verify the actual output before finishing. Call "
+    "'finish_sandbox_task(result=..., status=...)' with an honest status: 'completed' only if you "
+    "verified the requested outcome, 'partial' if only some of it was accomplished, 'no_results' if "
+    "commands ran fine but produced no matching data, 'failed' only for a real unrecoverable error.\n"
     "5. If a command fails, inspect stderr, adapt (fix code / install missing dependency / "
-    "adjust command) and retry — do not give up after a single failure unless clearly unrecoverable.\n"
+    "adjust command) and retry — do not give up after a single failure unless clearly unrecoverable. "
+    "But do not repeat the exact same failing command more than twice without changing approach.\n"
     f"{CONCISE_FINAL_ANSWER_DIRECTIVE}"
 )
 
@@ -64,6 +79,7 @@ class SandboxState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add]
     task_complete: bool
     final_result: Optional[str]
+    completion_status: str
     step_count: int
     user_id: int
     run_id: str
@@ -101,11 +117,13 @@ def agent_node(state: SandboxState) -> Dict[str, Any]:
 
     task_complete = False
     final_result = None
+    completion_status = state.get("completion_status", "partial")
     if getattr(response, "tool_calls", None):
         for tc in response.tool_calls:
             if tc.get("name") == "finish_sandbox_task":
                 task_complete = True
                 final_result = tc.get("args", {}).get("result", "")
+                completion_status = str(tc.get("args", {}).get("status") or "completed")
                 break
 
     if not task_complete and not getattr(response, "tool_calls", None):
@@ -113,11 +131,15 @@ def agent_node(state: SandboxState) -> Dict[str, Any]:
         if text_content and len(text_content.strip()) > 30:
             task_complete = True
             final_result = text_content.strip()
+            # The LLM stopped calling tools without an explicit finish_sandbox_task
+            # verdict — treat this as PARTIAL rather than assuming full success.
+            completion_status = "partial"
 
     return {
         "messages": [response],
         "task_complete": task_complete,
         "final_result": final_result,
+        "completion_status": completion_status,
         "step_count": step + 1,
     }
 
@@ -157,13 +179,19 @@ def tools_node(state: SandboxState) -> Dict[str, Any]:
         dur_ms = int((time.time() - t_start) * 1000)
 
         mapped_id, mapped_name = TOOL_DISPLAY_MAP.get(t_name, (t_name, t_name))
+        # Distinguish "the tool ran" from "the tool found something" instead of
+        # hardcoding success regardless of actual output content.
+        result_status = "error" if output_str.lower().startswith(("error", "tool execution note:")) else "success"
         tool_results.append({
             "toolId": mapped_id,
             "toolName": mapped_name,
-            "status": "success",
+            "status": result_status,
             "executionTimeMs": max(dur_ms, 25),
             "data": {"output": output_str[:800]},
         })
+        # Emit a timing event per tool call so the frontend's live activity
+        # timeline can show each real step (not just the browser agent).
+        async_agent_manager.log_timing(run_id, f"tool_{t_name}", dur_ms, tool=mapped_name)
         tool_messages.append(ToolMessage(content=output_str, tool_call_id=t_id))
 
     return {"messages": tool_messages, "tool_results": tool_results}
@@ -225,6 +253,11 @@ def run_sandbox_agent(
     async_agent_manager.set_state(actual_run_id, AgentRunState.RUNNING)
 
     initial_messages: List[BaseMessage] = [SystemMessage(content=SYSTEM_INSTRUCTION_SANDBOX)]
+    user_facts_context = get_facts_as_context(user_id)
+    if user_facts_context:
+        initial_messages.append(SystemMessage(
+            content=f"=== LONG-TERM USER MEMORY ===\n{user_facts_context}\n=== END LONG-TERM USER MEMORY ==="
+        ))
     if history:
         for msg in history[-10:]:
             if msg.get("role") == "user":
@@ -237,6 +270,7 @@ def run_sandbox_agent(
         "messages": initial_messages,
         "task_complete": False,
         "final_result": None,
+        "completion_status": "partial",
         "step_count": 0,
         "user_id": user_id,
         "run_id": actual_run_id,
@@ -247,6 +281,7 @@ def run_sandbox_agent(
     try:
         final_state = sandbox_agent_graph.invoke(initial_state)
         final_output = final_state.get("final_result")
+        completion_status_str = final_state.get("completion_status") or "partial"
         if not final_output or len(final_output.strip()) < 5:
             last_msg = final_state["messages"][-1] if final_state["messages"] else None
             final_output = (
@@ -254,19 +289,39 @@ def run_sandbox_agent(
                 if last_msg and isinstance(last_msg.content, str) and last_msg.content.strip()
                 else "Sandbox agent reached its iteration limit without a conclusive result."
             )
+            # No explicit finish_sandbox_task verdict was ever produced — do not
+            # silently claim COMPLETED for an unverified iteration-limit exit.
+            completion_status_str = "partial"
         tool_results_list = final_state.get("tool_results", [])
-        async_agent_manager.complete_run(actual_run_id, final_output, tool_results_list)
+
+        # TASK VERIFICATION: cross-check the self-reported status against what the
+        # sandbox tools actually produced (e.g. `list 5 files` but only 2 lines were
+        # actually read/written) instead of trusting "completed" unconditionally.
+        adj_status, adj_verified, adj_requested, verify_note = verify_completion_claim(
+            user_prompt=user_prompt, tool_results=tool_results_list, claimed_status=completion_status_str,
+        )
+        if verify_note:
+            final_output = f"{final_output}\n\n_Verification note: {verify_note}_"
+        completion_status_str = adj_status
+
+        run_state = STATUS_TO_RUN_STATE.get(completion_status_str, AgentRunState.COMPLETED)
+        async_agent_manager.complete_run(
+            actual_run_id, final_output, tool_results_list, completion_status=run_state,
+            verified_count=adj_verified, requested_count=adj_requested,
+        )
         return final_output, tool_results_list, "LangGraph Autonomous Sandbox Agent"
 
     except LLMTimeoutError as exc:
         async_agent_manager.complete_run(
             actual_run_id, "The sandbox agent timed out waiting for the LLM response.",
-            [], error="LLM_TIMEOUT", is_timeout=True
+            [], error="LLM_TIMEOUT", is_timeout=True, completion_status=AgentRunState.TIMEOUT
         )
         raise exc
     except LLMCancelledError as exc:
-        async_agent_manager.complete_run(actual_run_id, "Execution was cancelled.", [], error="CANCELLED")
+        async_agent_manager.complete_run(
+            actual_run_id, "Execution was cancelled.", [], error="CANCELLED", completion_status=AgentRunState.CANCELLED
+        )
         raise exc
     except Exception as exc:
-        async_agent_manager.complete_run(actual_run_id, str(exc), [], error=str(exc))
+        async_agent_manager.complete_run(actual_run_id, str(exc), [], error=str(exc), completion_status=AgentRunState.FAILED)
         raise exc

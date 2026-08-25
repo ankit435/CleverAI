@@ -70,6 +70,10 @@ def perform_web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
         return {
             "query": cleaned_query,
             "results": [],
+            # Explicit machine-readable status so callers never have to
+            # string-match `formatted` to tell "executed successfully with
+            # zero matches" apart from "the search tool itself failed".
+            "status": "no_results",
             "formatted": f"No live search results could be retrieved for '{cleaned_query}'."
         }
 
@@ -80,6 +84,7 @@ def perform_web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
     return {
         "query": cleaned_query,
         "results": results,
+        "status": "results_found",
         "formatted": formatted_text.strip()
     }
 

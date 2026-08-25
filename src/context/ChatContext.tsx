@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { Theme, ChatThread, Plugin, PluginCategoryInfo, ChatCategory, Message, CustomToolFormData } from '../types';
+import { Theme, ChatThread, Plugin, PluginCategoryInfo, ChatCategory, Message, CustomToolFormData, ActivityStep } from '../types';
 import { INITIAL_PLUGINS } from '../data/defaultPlugins';
 import { AppConfig, DEFAULT_APP_CONFIG } from '../config/appConfig';
 import { apiClient } from '../config/apiClient';
@@ -49,6 +49,8 @@ interface ChatContextType {
   toggleActivePluginId: (id: string) => void;
   isGenerating: boolean;
   sendMessage: (text: string, attachedFile?: File | null) => Promise<void>;
+  retryRun: (threadId: string, failedRunId: string) => Promise<void>;
+  continueRun: (threadId: string, waitingRunId: string) => Promise<void>;
   stopGenerating: () => void;
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -73,6 +75,51 @@ interface ChatContextType {
   refreshBrowserStatus: () => Promise<void>;
   resolveBrowserConfirmation: (confirmationId: string, approved: boolean) => Promise<void>;
 }
+
+// Maps the backend's authoritative `AgentRunState` completion status to a
+// distinct user-facing badge, so PARTIAL/NO_RESULTS/TIMEOUT/WAITING_FOR_USER/
+// TOOL_UNAVAILABLE/CANCELLED never look identical to a verified COMPLETED reply.
+const STATUS_BADGES: Record<string, string> = {
+  COMPLETED: '',
+  PARTIAL: '⚠️ ',
+  NO_RESULTS: 'ℹ️ ',
+  TIMEOUT: '⏱️ ',
+  FAILED: '⚠️ ',
+  CANCELLED: '🛑 ',
+  WAITING_FOR_USER: '🔐 ',
+  TOOL_UNAVAILABLE: '🚫 ',
+};
+
+// Generic, tool-agnostic label mapper — covers browser, sandbox/code, search,
+// image, calculation, and delegated sub-agents. Falls back to a readable
+// version of whatever raw name arrives so unknown/future tools still work.
+const TOOL_ACTIVITY_LABELS: Record<string, string> = {
+  browser_navigate: '🌐 Opening browser and navigating…',
+  browser_act: '🖱️ Interacting with the page…',
+  browser_observe: '🔎 Scanning page for elements…',
+  browser_extract: '📄 Extracting data from the page…',
+  finish_task: '✅ Finalizing browser result…',
+  execute_python_code: '🐍 Running Python code…',
+  execute_shell_command: '💻 Running shell command…',
+  read_file: '📂 Reading file…',
+  write_file: '📝 Writing file…',
+  list_directory: '📁 Listing directory…',
+  finish_sandbox_task: '✅ Finalizing sandbox result…',
+  web_search: '🔍 Searching the web…',
+  code_interpreter: '🐍 Executing code…',
+  generate_image: '🎨 Generating image…',
+  calculate: '🧮 Calculating…',
+  auto_create_and_execute_tool: '🛠️ Building a custom tool…',
+  delegate_to_browser_agent: '🤝 Handing off to the Browser Agent…',
+  delegate_to_sandbox_agent: '🤝 Handing off to the Sandbox Agent…',
+  delegate_to_research_agent: '🤝 Handing off to the Research Agent…',
+};
+
+const friendlyToolLabel = (rawName: string): string => {
+  if (TOOL_ACTIVITY_LABELS[rawName]) return TOOL_ACTIVITY_LABELS[rawName];
+  const spaced = rawName.replace(/^tool_/, '').replace(/_/g, ' ');
+  return `⚙️ ${spaced.charAt(0).toUpperCase()}${spaced.slice(1)}…`;
+};
 
 const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
@@ -609,6 +656,187 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
   };
 
+  // Appends one entry to a message's live activity timeline — generic across ANY
+  // tool/agent (browser, sandbox/code execution, web search, image generation,
+  // delegated sub-agents, etc.), not just the browser. Keeps a bounded history so
+  // the user can see the real sequence of what happened instead of one line that
+  // keeps getting overwritten.
+  const appendActivityStep = (threadId: string, aiMsgId: string, step: Omit<ActivityStep, 'id' | 'timestamp'>) => {
+    setChats(prev =>
+      prev.map(c => {
+        if (c.id !== threadId) return c;
+        return {
+          ...c,
+          messages: c.messages.map(m => {
+            if (m.id !== aiMsgId) return m;
+            const existing = m.activityLog || [];
+            const entry: ActivityStep = {
+              ...step,
+              id: `step-${Date.now()}-${existing.length}`,
+              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+            };
+            return { ...m, activityLog: [...existing, entry].slice(-30) };
+          }),
+          updatedAt: new Date().toISOString()
+        };
+      })
+    );
+  };
+
+  // Subscribes to the SSE stream for an already-started run (used by both
+  // sendMessage's initial run and retryRun/continueRun's follow-up runs) so the
+  // retry/continue affordances get the exact same live-progress UX as a fresh send.
+  const subscribeToRun = (runId: string, finalThreadId: string, aiMsgId: string): Promise<void> => {
+    return new Promise<void>((resolve) => {
+      const controller = apiClient.chat.streamRunEvents(
+        runId,
+        (event: any) => {
+          if (event.type === 'state') {
+            const label = event.current_action || `Status: ${event.status}`;
+            updateAiMessage(finalThreadId, aiMsgId, { statusText: label });
+            appendActivityStep(finalThreadId, aiMsgId, { label, source: 'agent', status: 'running' });
+          } else if (event.type === 'timing' && event.event?.tool) {
+            const rawTool = event.event.tool as string;
+            const durationMs = event.event.duration_ms;
+            const label = friendlyToolLabel(rawTool);
+            updateAiMessage(finalThreadId, aiMsgId, { statusText: `${label} (${durationMs}ms)` });
+            appendActivityStep(finalThreadId, aiMsgId, {
+              label,
+              source: rawTool,
+              status: 'done',
+              durationMs
+            });
+          } else if (event.type === 'completed') {
+            const finalText = event.reply || 'Response received from AI server.';
+            const status: string | undefined = event.status;
+            const badge = STATUS_BADGES[status || ''] || (event.error && status !== 'COMPLETED' ? '⚠️ ' : '');
+            updateAiMessage(finalThreadId, aiMsgId, {
+              text: `${badge}${finalText}`,
+              toolResults: event.tool_results,
+              statusText: undefined,
+              isStreaming: false,
+              completionStatus: status,
+              verifiedCount: event.verified_count ?? undefined,
+              requestedCount: event.requested_count ?? undefined,
+            });
+            appendActivityStep(finalThreadId, aiMsgId, {
+              label: status === 'COMPLETED' ? '✅ Completed' : `${badge}${status || 'Finished'}`,
+              source: 'agent',
+              status: status && status !== 'COMPLETED' && status !== 'PARTIAL' ? 'error' : 'done'
+            });
+            activeStreamRef.current = null;
+            resolve();
+          } else if (event.type === 'error') {
+            updateAiMessage(finalThreadId, aiMsgId, {
+              text: `⚠️ ${event.message || 'Agent stream error.'}`,
+              statusText: undefined,
+              isStreaming: false
+            });
+            activeStreamRef.current = null;
+            resolve();
+          }
+        },
+        () => {
+          apiClient.chat.getRunStatus(runId)
+            .then((status: any) => {
+              updateAiMessage(finalThreadId, aiMsgId, {
+                text: status.reply || '⚠️ Lost connection to the live agent stream, and no final reply was recorded.',
+                toolResults: status.toolCalls,
+                statusText: undefined,
+                isStreaming: false
+              });
+            })
+            .catch(() => {
+              updateAiMessage(finalThreadId, aiMsgId, {
+                text: '⚠️ Lost connection to the live agent stream and could not recover the final result.',
+                statusText: undefined,
+                isStreaming: false
+              });
+            })
+            .finally(() => resolve());
+        }
+      );
+      activeStreamRef.current = { controller, runId, threadId: finalThreadId, aiMsgId };
+    });
+  };
+
+  // Retries a FAILED/TIMEOUT/NO_RESULTS/CANCELLED run (the [Retry] button) by
+  // starting a brand-new backend run with the same prompt, then live-streaming
+  // its progress into a fresh placeholder AI message — same UX as a normal send.
+  const retryRun = async (threadId: string, failedRunId: string) => {
+    setIsGenerating(true);
+    const aiMsgId = `msg-ai-${Date.now()}`;
+    const placeholderMsg: Message = {
+      id: aiMsgId,
+      sender: 'ai',
+      text: '',
+      statusText: 'Retrying…',
+      activityLog: [],
+      isStreaming: true,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    setChats(prev =>
+      prev.map(c =>
+        c.id === threadId
+          ? { ...c, messages: [...c.messages, placeholderMsg], updatedAt: new Date().toISOString() }
+          : c
+      )
+    );
+    try {
+      const startRes = await apiClient.chat.retryRun(failedRunId);
+      const runId: string = startRes.runId || startRes.run_id;
+      updateAiMessage(threadId, aiMsgId, { runId });
+      await subscribeToRun(runId, threadId, aiMsgId);
+    } catch (err: any) {
+      updateAiMessage(threadId, aiMsgId, {
+        text: `⚠️ Could not retry: ${err.message || 'Unknown error.'}`,
+        statusText: undefined,
+        isStreaming: false
+      });
+    } finally {
+      activeStreamRef.current = null;
+      setIsGenerating(false);
+    }
+  };
+
+  // Resumes a WAITING_FOR_USER run (the [Continue] button) — e.g. after the user
+  // has completed a required login inside the connected browser window.
+  const continueRun = async (threadId: string, waitingRunId: string) => {
+    setIsGenerating(true);
+    const aiMsgId = `msg-ai-${Date.now()}`;
+    const placeholderMsg: Message = {
+      id: aiMsgId,
+      sender: 'ai',
+      text: '',
+      statusText: 'Resuming…',
+      activityLog: [],
+      isStreaming: true,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    setChats(prev =>
+      prev.map(c =>
+        c.id === threadId
+          ? { ...c, messages: [...c.messages, placeholderMsg], updatedAt: new Date().toISOString() }
+          : c
+      )
+    );
+    try {
+      const startRes = await apiClient.chat.continueRun(waitingRunId);
+      const runId: string = startRes.runId || startRes.run_id;
+      updateAiMessage(threadId, aiMsgId, { runId });
+      await subscribeToRun(runId, threadId, aiMsgId);
+    } catch (err: any) {
+      updateAiMessage(threadId, aiMsgId, {
+        text: `⚠️ Could not continue: ${err.message || 'Unknown error.'}`,
+        statusText: undefined,
+        isStreaming: false
+      });
+    } finally {
+      activeStreamRef.current = null;
+      setIsGenerating(false);
+    }
+  };
+
   const sendMessage = async (text: string, attachedFile?: File | null) => {
     if (!text.trim() && !attachedFile) return;
 
@@ -657,6 +885,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       sender: 'ai',
       text: '',
       statusText: 'Queued…',
+      activityLog: [],
       isStreaming: true,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
@@ -710,62 +939,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updateAiMessage(finalThreadId, aiMsgId, { runId });
 
       // 2. Subscribe to the live SSE progress stream for this exact run.
-      await new Promise<void>((resolve) => {
-        const controller = apiClient.chat.streamRunEvents(
-          runId,
-          (event: any) => {
-            if (event.type === 'state') {
-              updateAiMessage(finalThreadId, aiMsgId, {
-                statusText: event.current_action || `Status: ${event.status}`
-              });
-            } else if (event.type === 'timing' && event.event?.tool) {
-              updateAiMessage(finalThreadId, aiMsgId, {
-                statusText: `⚙️ ${event.event.tool} (${event.event.duration_ms}ms)`
-              });
-            } else if (event.type === 'completed') {
-              const finalText = event.reply || 'Response received from AI server.';
-              updateAiMessage(finalThreadId, aiMsgId, {
-                text: event.error && event.status !== 'COMPLETED' ? `⚠️ ${finalText}` : finalText,
-                toolResults: event.tool_results,
-                statusText: undefined,
-                isStreaming: false
-              });
-              activeStreamRef.current = null;
-              resolve();
-            } else if (event.type === 'error') {
-              updateAiMessage(finalThreadId, aiMsgId, {
-                text: `⚠️ ${event.message || 'Agent stream error.'}`,
-                statusText: undefined,
-                isStreaming: false
-              });
-              activeStreamRef.current = null;
-              resolve();
-            }
-          },
-          () => {
-            // SSE connection error (network drop, backend unreachable, etc.) — fall back to a
-            // final REST status poll so the user still gets a real result instead of hanging forever.
-            apiClient.chat.getRunStatus(runId)
-              .then((status: any) => {
-                updateAiMessage(finalThreadId, aiMsgId, {
-                  text: status.reply || '⚠️ Lost connection to the live agent stream, and no final reply was recorded.',
-                  toolResults: status.toolCalls,
-                  statusText: undefined,
-                  isStreaming: false
-                });
-              })
-              .catch(() => {
-                updateAiMessage(finalThreadId, aiMsgId, {
-                  text: '⚠️ Lost connection to the live agent stream and could not recover the final result.',
-                  statusText: undefined,
-                  isStreaming: false
-                });
-              })
-              .finally(() => resolve());
-          }
-        );
-        activeStreamRef.current = { controller, runId, threadId: finalThreadId, aiMsgId };
-      });
+      await subscribeToRun(runId, finalThreadId, aiMsgId);
     } catch (err: any) {
       console.warn('API communication error:', err);
       const errMsg = err.message || '';
@@ -818,6 +992,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         toggleActivePluginId,
         isGenerating,
         sendMessage,
+        retryRun,
+        continueRun,
         stopGenerating,
         sidebarOpen,
         setSidebarOpen,
@@ -853,4 +1029,3 @@ export const useChatContext = () => {
   if (!ctx) throw new Error('useChatContext must be used within ChatProvider');
   return ctx;
 };
-

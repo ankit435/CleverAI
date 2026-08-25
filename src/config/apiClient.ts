@@ -100,6 +100,15 @@ export const apiClient = {
 
     cancelRun: (runId: string) => apiFetch(`/chat/runs/${runId}/cancel`, { method: 'POST' }),
 
+    // Retries a FAILED/TIMEOUT/NO_RESULTS/CANCELLED run by starting a fresh run
+    // with the same prompt — powers the UI's [Retry] affordance.
+    retryRun: (runId: string) => apiFetch(`/chat/runs/${runId}/retry`, { method: 'POST' }),
+
+    // Resumes a WAITING_FOR_USER run (e.g. after completing a login in the
+    // connected browser) — powers the UI's [Continue] affordance.
+    continueRun: (runId: string, message?: string) =>
+      apiFetch(`/chat/runs/${runId}/continue`, { method: 'POST', body: JSON.stringify({ message: message || '' }) }),
+
     /**
      * Subscribes to the Server-Sent Events stream for a live agent run and invokes
      * `onEvent` for every parsed SSE frame (`{type, ...}`). Uses `fetch` + a manual

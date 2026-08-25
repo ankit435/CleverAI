@@ -4,6 +4,7 @@ from typing import Dict, Optional
 
 from stagehand import Stagehand, local_browser
 
+from browser.errors import BrowserUnavailableError
 from browser.llm_bridge import nvidia_generate
 from browser.schema import BrowserMode, BrowserStatus, ConfirmationRequest, TabInfo
 
@@ -39,8 +40,16 @@ class UserBrowserSession:
     async def connect_existing(self, cdp_url: str = DEFAULT_CDP_URL) -> None:
         """Attach to the user's already-running Chrome/Edge via CDP (preserves logins)."""
         await self.close()
-        self.browser = await local_browser.connect(cdp_url=cdp_url)
-        self.stagehand = await Stagehand.create(browser=self.browser, model=nvidia_generate)
+        try:
+            self.browser = await local_browser.connect(cdp_url=cdp_url)
+            self.stagehand = await Stagehand.create(browser=self.browser, model=nvidia_generate)
+        except Exception as exc:
+            # Connection refused / no CDP endpoint listening / Stagehand init failure —
+            # this means the capability genuinely cannot be used right now, not that
+            # a specific action failed. Callers must surface this as UNAVAILABLE.
+            raise BrowserUnavailableError(
+                f"Could not connect to an existing browser at {cdp_url}: {exc}"
+            ) from exc
         self.mode = BrowserMode.EXISTING_CDP
         self.cdp_endpoint = cdp_url
         self.touch()
@@ -48,8 +57,14 @@ class UserBrowserSession:
     async def launch_managed(self, headless: bool = False) -> None:
         """Launch a fresh, Stagehand-managed local Chromium instance."""
         await self.close()
-        self.browser = await local_browser.launch(headless=headless)
-        self.stagehand = await Stagehand.create(browser=self.browser, model=nvidia_generate)
+        try:
+            self.browser = await local_browser.launch(headless=headless)
+            self.stagehand = await Stagehand.create(browser=self.browser, model=nvidia_generate)
+        except Exception as exc:
+            # Chromium binary missing, sandbox/permissions failure, Stagehand init
+            # failure, etc. — the browser capability itself is unavailable, not a
+            # single action within it.
+            raise BrowserUnavailableError(f"Could not launch a managed local browser: {exc}") from exc
         self.mode = BrowserMode.MANAGED_BROWSER
         self.cdp_endpoint = None
         self.touch()
@@ -174,5 +189,3 @@ class BrowserSessionManager:
 
 
 browser_session_manager = BrowserSessionManager()
-
-

@@ -81,10 +81,22 @@ class ConfirmationRequest(BaseModel):
 
 
 class ActionResult(BaseModel):
-    """Generic envelope for every Browser Agent operation (act/observe/extract/navigate)."""
+    """
+    Generic envelope for every Browser Agent operation (act/observe/extract/navigate).
+
+    `status` is deliberately granular and MUST NOT be collapsed to a plain
+    success/error boolean by any caller:
+      - "success"               execution completed; check `data`/message for results
+      - "no_results"             execution completed; page had nothing matching
+      - "error"                  execution failed (non-timeout, non-availability issue)
+      - "timeout"                execution exceeded its time budget (tool IS available)
+      - "unavailable"            the browser capability itself cannot be used right now
+      - "auth_required"          the site/action needs the user to log in first
+      - "confirmation_required"  a risky action is paused pending human approval
+    """
     success: bool = True
     action: str
-    status: str = "success"  # success | error | confirmation_required
+    status: str = "success"
     duration_ms: int = 0
     message: str = ""
     current_url: Optional[str] = None
@@ -92,6 +104,11 @@ class ActionResult(BaseModel):
     confirmation: Optional[ConfirmationRequest] = None
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    # Real sub-span latency breakdown (item 3): instead of one opaque
+    # `duration_ms` hiding session acquisition/navigation/DOM work/Stagehand
+    # reasoning behind a single number, this maps stage name -> milliseconds
+    # spent, e.g. {"session_acquisition_ms": 12, "stagehand_call_ms": 4200}.
+    timing_breakdown: Optional[Dict[str, int]] = None
 
 
 CONFIRMATION_EXPIRY_SECONDS = 300

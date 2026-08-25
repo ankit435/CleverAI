@@ -180,13 +180,22 @@ def list_directory(path: str = ".") -> str:
 
 
 @tool
-def finish_sandbox_task(result: str) -> str:
+def finish_sandbox_task(result: str, status: str = "completed") -> str:
     """
-    TERMINAL TOOL: call this ONLY when the sandbox task is fully complete and verified.
-    Pass the complete, concrete, user-facing Markdown summary (including exact outputs
-    observed) to `result`.
+    TERMINAL TOOL: call this ONLY when you stop acting on the sandbox task —
+    whether fully complete, partially complete, or blocked. Pass the complete,
+    concrete, user-facing Markdown summary (including exact outputs observed)
+    to `result`.
+
+    Set `status` honestly based on verified command/script output, not on
+    whether a command merely ran without raising an exception:
+      - "completed": the requested outcome was verified in real output.
+      - "partial": only part of the request was verified/accomplished.
+      - "failed": a real, unrecoverable execution error blocked completion.
+      - "no_results": commands ran fine but produced no matching data.
     Args:
         result: The complete final user-facing Markdown answer.
+        status: One of "completed", "partial", "failed", "no_results".
     """
     return f"[TASK_COMPLETED]: {result}"
 

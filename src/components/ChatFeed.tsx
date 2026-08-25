@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useChatContext } from '../context/ChatContext';
 import { ToolWidget } from './ToolWidget';
+import { ActivityTimeline } from './ActivityTimeline';
 import { TypewriterText } from './TypewriterText';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { 
@@ -21,7 +22,7 @@ import {
 const animatedMessageIds = new Set<string>();
 
 export const ChatFeed: React.FC = () => {
-  const { activeChat, isGenerating, isLoadingMessages, appConfig, userSession, sendMessage } = useChatContext();
+  const { activeChat, isGenerating, isLoadingMessages, appConfig, userSession, sendMessage, retryRun, continueRun } = useChatContext();
   const bottomRef = useRef<HTMLDivElement>(null);
   const currentChatIdRef = useRef<string | null>(null);
 
@@ -128,6 +129,47 @@ export const ChatFeed: React.FC = () => {
                 </div>
               ) : (
                 <div className="message-body">{msg.text}</div>
+              )}
+
+              {/* Live/collapsed step-by-step activity trace — generic across ANY
+                  tool/agent (browser, sandbox, search, image gen, delegated
+                  sub-agents), not just the browser. Shown while streaming so the
+                  user sees real progress instead of a frozen line, then collapses
+                  into a toggle once the run completes. */}
+              {msg.sender === 'ai' && msg.activityLog && msg.activityLog.length > 0 && (
+                <ActivityTimeline steps={msg.activityLog} isLive={Boolean(msg.isStreaming)} />
+              )}
+
+              {/* Retry/Continue affordances (item 8): a run that ended in a
+                  non-terminal-success state should let the user act on it
+                  directly instead of just reading a dead error message.
+                  - TIMEOUT/FAILED/NO_RESULTS/CANCELLED -> [Retry] starts a fresh run.
+                  - WAITING_FOR_USER (e.g. login required) -> [Continue] resumes it. */}
+              {msg.sender === 'ai' && !msg.isStreaming && msg.runId && (
+                <>
+                  {(msg.completionStatus === 'TIMEOUT' || msg.completionStatus === 'FAILED' || msg.completionStatus === 'NO_RESULTS') && (
+                    <div className="message-action-row" style={{ marginTop: '8px' }}>
+                      <button
+                        className="msg-action-btn retry-continue-btn"
+                        disabled={isGenerating}
+                        onClick={() => retryRun(activeChat.id, msg.runId!)}
+                      >
+                        <RotateCcw size={14} /> Retry
+                      </button>
+                    </div>
+                  )}
+                  {msg.completionStatus === 'WAITING_FOR_USER' && (
+                    <div className="message-action-row" style={{ marginTop: '8px' }}>
+                      <button
+                        className="msg-action-btn retry-continue-btn"
+                        disabled={isGenerating}
+                        onClick={() => continueRun(activeChat.id, msg.runId!)}
+                      >
+                        <RotateCcw size={14} /> Continue
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
 
               {/* Render Tool Results if any */}

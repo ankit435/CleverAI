@@ -1,0 +1,16 @@
+fastapi>=0.100.0
+uvicorn>=0.22.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-nvidia-ai-endpoints>=0.3.0
+markitdown[pdf,docx,pptx,xlsx]>=0.1.4
+python-multipart>=0.0.9
+
+# Browser Agent (Stagehand/Browserbase) — real AI-native browser automation SDK.
+# Local mode (default here) drives a Chromium instance without any Browserbase
+# account; the LLM reasoning is bridged to our own NVIDIA-backed model via a
+# custom generate callback (see browser/llm_bridge.py), so no OpenAI/Anthropic/
+# Google/Groq/Cerebras key is required.
+stagehand>=4.0.2,<5

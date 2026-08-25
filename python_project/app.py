@@ -1,5 +1,3 @@
-
-
 """FastAPI Microservice with Dynamic Tool Calling, RAG, and Browser AI Agent Platform."""
 import time
 from typing import Optional, List, Dict, Any
@@ -308,6 +306,8 @@ class RunStatusResponse(BaseModel):
     reply: Optional[str] = None
     error: Optional[str] = None
     diagnostics: List[Dict[str, Any]] = Field(default_factory=list)
+    verified_count: Optional[int] = None
+    requested_count: Optional[int] = None
 
 # ==========================================
 # ASYNCHRONOUS AGENT RUN LIFECYCLE ENDPOINTS
@@ -381,7 +381,9 @@ def get_run_status(run_id: str):
         tool_results=record.tool_results,
         reply=record.final_response,
         error=record.error,
-        diagnostics=[d.model_dump() for d in record.diagnostics]
+        diagnostics=[d.model_dump() for d in record.diagnostics],
+        verified_count=record.verified_count,
+        requested_count=record.requested_count
     )
 
 @app.get("/api/v1/chat/runs/{run_id}/events")
@@ -404,6 +406,97 @@ def cancel_agent_run(run_id: str):
     if not success:
         raise HTTPException(status_code=400, detail="Run could not be cancelled or has already completed.")
     return {"success": True, "message": f"Run '{run_id}' cancelled successfully."}
+
+
+@app.post("/api/v1/chat/runs/{run_id}/retry", response_model=AsyncChatStartResponse)
+async def retry_agent_run(run_id: str):
+    """
+    Retries a FAILED/TIMEOUT/NO_RESULTS/CANCELLED run by starting a brand-new run
+    with the same prompt/user/thread — used by the UI's [Retry] affordance. This does
+    NOT resurrect the old run_id (a terminal run stays terminal); it starts a fresh one.
+    """
+    record = async_agent_manager.get_run(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Agent run '{run_id}' not found.")
+
+    non_retryable = {AgentRunState.RUNNING, AgentRunState.WAITING_FOR_LLM, AgentRunState.QUEUED, AgentRunState.COMPLETED}
+    if record.status in non_retryable:
+        raise HTTPException(status_code=400, detail=f"Run is in state '{record.status}' and cannot be retried.")
+
+    new_record = async_agent_manager.create_run(
+        user_id=record.user_id,
+        thread_id=record.thread_id,
+        prompt=record.prompt,
+        model=record.model,
+    )
+
+    def _run_bg():
+        execute_tool_calling_flow(
+            user_prompt=record.prompt,
+            active_plugin_ids=[],
+            model_name=record.model,
+            document_context=[],
+            history=None,
+            user_id=record.user_id,
+            run_id=new_record.run_id,
+            thread_id=record.thread_id
+        )
+
+    asyncio.get_running_loop().run_in_executor(None, _run_bg)
+
+    return AsyncChatStartResponse(
+        run_id=new_record.run_id,
+        status=AgentRunState.QUEUED,
+        thread_id=record.thread_id,
+        message=f"Retry started as a new run (original run '{run_id}' left untouched)."
+    )
+
+
+@app.post("/api/v1/chat/runs/{run_id}/continue", response_model=AsyncChatStartResponse)
+async def continue_agent_run(run_id: str, req: Optional[ChatRequest] = None):
+    """
+    Resumes a run that is in WAITING_FOR_USER state (e.g. browser login required) by
+    starting a new run continuing from the same thread/context — used by the UI's
+    [Continue] affordance once the user has completed the required manual action
+    (e.g. logging in inside the connected browser window).
+    """
+    record = async_agent_manager.get_run(run_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Agent run '{run_id}' not found.")
+
+    if record.status != AgentRunState.WAITING_FOR_USER:
+        raise HTTPException(status_code=400, detail=f"Run is in state '{record.status}', not WAITING_FOR_USER — nothing to continue.")
+
+    continuation_prompt = (req.message.strip() if req and req.message and req.message.strip() else
+                            "Continue the previous task now that the required user action has been completed.")
+
+    new_record = async_agent_manager.create_run(
+        user_id=record.user_id,
+        thread_id=record.thread_id,
+        prompt=continuation_prompt,
+        model=record.model,
+    )
+
+    def _run_bg():
+        execute_tool_calling_flow(
+            user_prompt=continuation_prompt,
+            active_plugin_ids=[],
+            model_name=record.model,
+            document_context=[],
+            history=[{"role": "user", "content": record.prompt}, {"role": "assistant", "content": record.final_response or ""}],
+            user_id=record.user_id,
+            run_id=new_record.run_id,
+            thread_id=record.thread_id
+        )
+
+    asyncio.get_running_loop().run_in_executor(None, _run_bg)
+
+    return AsyncChatStartResponse(
+        run_id=new_record.run_id,
+        status=AgentRunState.QUEUED,
+        thread_id=record.thread_id,
+        message="Continuation started as a new run."
+    )
 
 # ==========================================
 # SYNCHRONOUS CHAT ENDPOINT (With Error Codes)
@@ -491,4 +584,3 @@ async def chat_endpoint(req: ChatRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=settings.host, port=settings.port)
-

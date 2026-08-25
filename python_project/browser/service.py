@@ -1,5 +1,3 @@
-
-
 """Unified Browser Service Facade (Stagehand-backed).
 
 Sync-callable facade over the async Stagehand session manager: every public
@@ -14,9 +12,11 @@ sees it, and only proceeds once a human approves it via `resolve_confirmation`.
 """
 import time
 import uuid
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
 
 from browser.async_worker import async_worker
+from browser.errors import BrowserAuthRequiredError, BrowserUnavailableError
 from browser.policy import browser_policy
 from browser.schema import (
     ActionResult, BrowserMode, BrowserStatus, CONFIRMATION_EXPIRY_SECONDS,
@@ -32,6 +32,37 @@ class BrowserService:
     def __init__(self) -> None:
         self.session_manager = browser_session_manager
         self.policy = browser_policy
+
+    @staticmethod
+    def _ms_since(t: float) -> int:
+        return int((time.time() - t) * 1000)
+
+    @staticmethod
+    def _classify_exception(action: str, exc: Exception) -> ActionResult:
+        """
+        Map a raised exception to the correct granular ActionResult.status so
+        callers can tell "the tool is genuinely unavailable" apart from "this
+        one action timed out" or "this one action errored" — collapsing all
+        three into one generic status is exactly the conflation bug this
+        taxonomy exists to prevent.
+        """
+        if isinstance(exc, BrowserUnavailableError):
+            return ActionResult(
+                action=action, status="unavailable",
+                message=f"Browser capability is currently unavailable: {exc}", error=str(exc),
+            )
+        if isinstance(exc, BrowserAuthRequiredError):
+            return ActionResult(
+                action=action, status="auth_required",
+                message=f"Authentication is required to continue: {exc}", error=str(exc),
+            )
+        if isinstance(exc, FutureTimeoutError):
+            return ActionResult(
+                action=action, status="timeout",
+                message=f"{action} timed out — the browser is available but this operation exceeded its time budget.",
+                error=str(exc),
+            )
+        return ActionResult(action=action, status="error", message=f"{action} failed: {exc}", error=str(exc))
 
     # ------------------------------------------------------------------ #
     # Intent / policy
@@ -54,6 +85,8 @@ class BrowserService:
                 else:
                     await session.connect_existing(cdp_url=cdp_url)
                 return True, "Connected successfully.", await session.get_status()
+            except BrowserUnavailableError as exc:
+                return False, f"Browser capability is unavailable: {exc}", await session.get_status()
             except Exception as exc:
                 return False, f"Connection failed: {exc}", await session.get_status()
 
@@ -177,22 +210,44 @@ class BrowserService:
             if not ok:
                 return ActionResult(action="navigate", status="error", message=f"Navigation blocked: {err}", error="SSRF_BLOCKED")
 
+            t_session = time.time()
             session = self.session_manager.get_or_create(user_id)
+            launched_now = False
             if not session.is_connected:
                 await session.launch_managed()
+                launched_now = True
+            session_acquisition_ms = self._ms_since(t_session)
+
+            t_tab = time.time()
             page = await session.get_page_for_thread(thread_id)
+            tab_resolution_ms = self._ms_since(t_tab)
+
+            t_nav = time.time()
             await page.goto(clean_url)
+            navigation_ms = self._ms_since(t_nav)
+
+            t_meta = time.time()
             title = await page.title()
             final_url = await page.url()
+            metadata_read_ms = self._ms_since(t_meta)
+
+            timing = {
+                "browser_launch_ms": session_acquisition_ms if launched_now else 0,
+                "session_acquisition_ms": session_acquisition_ms,
+                "tab_resolution_ms": tab_resolution_ms,
+                "navigation_ms": navigation_ms,
+                "metadata_read_ms": metadata_read_ms,
+            }
             return ActionResult(
                 action="navigate", status="success", message=f"Navigated to {final_url}",
-                duration_ms=int((time.time() - start) * 1000), current_url=final_url, current_title=title,
+                duration_ms=self._ms_since(start), current_url=final_url, current_title=title,
+                timing_breakdown=timing,
             )
 
         try:
             return async_worker.run(_do)
         except Exception as exc:
-            return ActionResult(action="navigate", status="error", message=f"Navigation failed: {exc}", error=str(exc))
+            return self._classify_exception("navigate", exc)
 
     def act(self, user_id: int, instruction: str, confirmed: bool = False, thread_id: Optional[str] = None) -> ActionResult:
         """Execute a natural-language browser action via Stagehand's `act()`."""
@@ -217,69 +272,167 @@ class BrowserService:
 
         async def _do():
             start = time.time()
+            t_session = time.time()
             session = self.session_manager.get_or_create(user_id)
+            launched_now = False
             if not session.is_connected:
                 await session.launch_managed()
+                launched_now = True
+            session_acquisition_ms = self._ms_since(t_session)
+
+            t_tab = time.time()
             page = await session.get_page_for_thread(thread_id)
+            tab_resolution_ms = self._ms_since(t_tab)
+
+            t_stagehand = time.time()
             result = await session.stagehand.act(instruction, page=page)
+            stagehand_call_ms = self._ms_since(t_stagehand)
+
+            t_meta = time.time()
             url = await page.url() if page else None
             title = await page.title() if page else None
+            metadata_read_ms = self._ms_since(t_meta)
+
+            act_status = "success" if result.data.success else "error"
+            recovery_data: Dict[str, Any] = {}
+            recovery_observe_ms = 0
+
+            # AUTO-RECOVERY (item 7): a failed act() usually means Stagehand's
+            # element resolution was stale/wrong for the current page state, not
+            # that the browser/tool is unavailable. Instead of just surfacing the
+            # raw failure to the LLM and hoping it thinks to call browser_observe
+            # itself, automatically re-anchor once via observe() so the LLM's
+            # next attempt has fresh, accurate candidates to work from.
+            if act_status == "error":
+                t_recovery = time.time()
+                try:
+                    obs_result = await session.stagehand.observe(instruction, page=page)
+                    candidates = [
+                        {"description": getattr(a, "description", "") or "", "method": getattr(a, "method", "") or ""}
+                        for a in obs_result.data
+                    ]
+                    recovery_data["recovery_observation"] = candidates
+                except Exception:
+                    # Best-effort only — if re-observation itself fails, just fall
+                    # through to the original error without masking it.
+                    pass
+                recovery_observe_ms = self._ms_since(t_recovery)
+
+            message = result.data.message
+            if recovery_data.get("recovery_observation"):
+                obs_lines = "\n".join(
+                    f"- {c['description']} ({c['method']})" for c in recovery_data["recovery_observation"]
+                ) or "No actionable elements currently found."
+                message = (
+                    f"{message}\n\n[AUTO-RECOVERY] Re-scanned the page after this failed action. "
+                    f"Currently available elements:\n{obs_lines}\n"
+                    "Use this to retry with a more precise instruction instead of repeating the exact same one."
+                )
+
+            timing = {
+                "browser_launch_ms": session_acquisition_ms if launched_now else 0,
+                "session_acquisition_ms": session_acquisition_ms,
+                "tab_resolution_ms": tab_resolution_ms,
+                "stagehand_reasoning_ms": stagehand_call_ms,
+                "metadata_read_ms": metadata_read_ms,
+                "recovery_observe_ms": recovery_observe_ms,
+            }
+
             return ActionResult(
-                action="act", status="success" if result.data.success else "error",
-                message=result.data.message, duration_ms=int((time.time() - start) * 1000),
+                action="act", status=act_status,
+                message=message, duration_ms=self._ms_since(start),
                 current_url=url, current_title=title,
+                data=recovery_data or None,
+                timing_breakdown=timing,
             )
 
         try:
             return async_worker.run(_do)
         except Exception as exc:
-            return ActionResult(action="act", status="error", message=f"Action failed: {exc}", error=str(exc))
+            return self._classify_exception("act", exc)
 
     def observe(self, user_id: int, instruction: Optional[str] = None, thread_id: Optional[str] = None) -> ActionResult:
         """Discover available actions/elements on the current page via Stagehand's `observe()`."""
         async def _do():
             start = time.time()
+            t_session = time.time()
             session = self.session_manager.get_or_create(user_id)
+            launched_now = False
             if not session.is_connected:
                 await session.launch_managed()
+                launched_now = True
+            session_acquisition_ms = self._ms_since(t_session)
+
+            t_tab = time.time()
             page = await session.get_page_for_thread(thread_id)
+            tab_resolution_ms = self._ms_since(t_tab)
+
+            t_stagehand = time.time()
             result = await session.stagehand.observe(instruction, page=page)
+            stagehand_call_ms = self._ms_since(t_stagehand)
+
             candidates = [
                 {"description": getattr(a, "description", "") or "", "method": getattr(a, "method", "") or ""}
                 for a in result.data
             ]
             summary = "\n".join(f"- {c['description']} ({c['method']})" for c in candidates) or "No actionable elements found."
+            timing = {
+                "browser_launch_ms": session_acquisition_ms if launched_now else 0,
+                "session_acquisition_ms": session_acquisition_ms,
+                "tab_resolution_ms": tab_resolution_ms,
+                "stagehand_reasoning_ms": stagehand_call_ms,
+            }
             return ActionResult(
-                action="observe", status="success", message=summary,
-                duration_ms=int((time.time() - start) * 1000), data={"candidates": candidates},
+                action="observe", status="success" if candidates else "no_results", message=summary,
+                duration_ms=self._ms_since(start), data={"candidates": candidates},
+                timing_breakdown=timing,
             )
 
         try:
             return async_worker.run(_do)
         except Exception as exc:
-            return ActionResult(action="observe", status="error", message=f"Observe failed: {exc}", error=str(exc))
+            return self._classify_exception("observe", exc)
 
     def extract(self, user_id: int, instruction: str, thread_id: Optional[str] = None) -> ActionResult:
         """Pull structured/free-text data from the current page via Stagehand's `extract()`."""
         async def _do():
             start = time.time()
+            t_session = time.time()
             session = self.session_manager.get_or_create(user_id)
+            launched_now = False
             if not session.is_connected:
                 await session.launch_managed()
+                launched_now = True
+            session_acquisition_ms = self._ms_since(t_session)
+
+            t_stagehand = time.time()
             result = await session.stagehand.extract(instruction)
+            stagehand_call_ms = self._ms_since(t_stagehand)
+
+            t_meta = time.time()
             raw_text = getattr(result.data, "extraction", str(result.data))
             page = await session.browser.context.active_page()
             url = await page.url() if page else None
             sanitized = security_manager.wrap_untrusted_content(raw_text, url or "unknown")
+            metadata_read_ms = self._ms_since(t_meta)
+
+            has_data = bool(raw_text and raw_text.strip())
+            timing = {
+                "browser_launch_ms": session_acquisition_ms if launched_now else 0,
+                "session_acquisition_ms": session_acquisition_ms,
+                "stagehand_reasoning_ms": stagehand_call_ms,
+                "metadata_read_ms": metadata_read_ms,
+            }
             return ActionResult(
-                action="extract", status="success", message=sanitized,
-                duration_ms=int((time.time() - start) * 1000), current_url=url, data={"raw": raw_text},
+                action="extract", status="success" if has_data else "no_results", message=sanitized,
+                duration_ms=self._ms_since(start), current_url=url, data={"raw": raw_text},
+                timing_breakdown=timing,
             )
 
         try:
             return async_worker.run(_do)
         except Exception as exc:
-            return ActionResult(action="extract", status="error", message=f"Extraction failed: {exc}", error=str(exc))
+            return self._classify_exception("extract", exc)
 
     def screenshot(self, user_id: int) -> ActionResult:
         async def _do():
@@ -320,4 +473,3 @@ class BrowserService:
 
 
 browser_service = BrowserService()
-

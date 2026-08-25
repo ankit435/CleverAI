@@ -287,6 +287,92 @@ chatRouter.post('/runs/:runId/cancel', async (req: AuthenticatedRequest, res: Re
   }
 });
 
+// POST /api/v1/chat/runs/:runId/retry - Retries a FAILED/TIMEOUT/NO_RESULTS/CANCELLED run
+// as a brand-new run with the same prompt (used by the UI's [Retry] affordance).
+chatRouter.post('/runs/:runId/retry', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = Number(req.user!.id);
+    const { runId } = req.params;
+
+    const agentRun = await prisma.agentRun.findFirst({ where: { id: runId, userId } });
+    if (!agentRun) {
+      return res.status(404).json({ error: `Agent run '${runId}' not found.` });
+    }
+
+    const pyRes = await fetch(`${PYTHON_SERVER_URL}/api/v1/chat/runs/${runId}/retry`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(5000)
+    });
+
+    if (!pyRes.ok) {
+      const errBody = await pyRes.json().catch(() => ({}));
+      return res.status(pyRes.status).json({ error: errBody.detail || 'Failed to retry agent run.' });
+    }
+
+    const data = await pyRes.json();
+
+    await prisma.agentRun.create({
+      data: {
+        id: data.run_id,
+        userId,
+        threadId: agentRun.threadId,
+        prompt: agentRun.prompt,
+        model: agentRun.model,
+        status: 'queued'
+      }
+    }).catch(() => {});
+
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to retry agent run' });
+  }
+});
+
+// POST /api/v1/chat/runs/:runId/continue - Resumes a WAITING_FOR_USER run (e.g. after
+// the user completes a login inside the connected browser) as a new run continuing
+// the same thread (used by the UI's [Continue] affordance).
+chatRouter.post('/runs/:runId/continue', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const userId = Number(req.user!.id);
+    const { runId } = req.params;
+    const { message } = req.body || {};
+
+    const agentRun = await prisma.agentRun.findFirst({ where: { id: runId, userId } });
+    if (!agentRun) {
+      return res.status(404).json({ error: `Agent run '${runId}' not found.` });
+    }
+
+    const pyRes = await fetch(`${PYTHON_SERVER_URL}/api/v1/chat/runs/${runId}/continue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: message || '', userId }),
+      signal: AbortSignal.timeout(5000)
+    });
+
+    if (!pyRes.ok) {
+      const errBody = await pyRes.json().catch(() => ({}));
+      return res.status(pyRes.status).json({ error: errBody.detail || 'Failed to continue agent run.' });
+    }
+
+    const data = await pyRes.json();
+
+    await prisma.agentRun.create({
+      data: {
+        id: data.run_id,
+        userId,
+        threadId: agentRun.threadId,
+        prompt: message || agentRun.prompt,
+        model: agentRun.model,
+        status: 'queued'
+      }
+    }).catch(() => {});
+
+    return res.json(data);
+  } catch (err: any) {
+    return res.status(500).json({ error: 'Failed to continue agent run' });
+  }
+});
+
 // POST /api/v1/chat - Production Multi-Tool Agent Execution & Persistence
 chatRouter.post('/', async (req: AuthenticatedRequest, res: Response) => {
   const startTime = Date.now();

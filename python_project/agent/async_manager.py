@@ -37,9 +37,19 @@ class AgentRunState(str, Enum):
     WAITING_FOR_BROWSER = "WAITING_FOR_BROWSER"
     WAITING_FOR_USER = "WAITING_FOR_USER"
     COMPLETED = "COMPLETED"
+    PARTIAL = "PARTIAL"                # some, but not all, requested items were verified
+    NO_RESULTS = "NO_RESULTS"          # executed correctly, nothing matched the request
+    TOOL_UNAVAILABLE = "TOOL_UNAVAILABLE"  # the needed capability genuinely could not be used
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
     CANCELLED = "CANCELLED"
+
+# Terminal states: no further progress will occur without new user input.
+TERMINAL_RUN_STATES = {
+    AgentRunState.COMPLETED, AgentRunState.PARTIAL, AgentRunState.NO_RESULTS,
+    AgentRunState.TOOL_UNAVAILABLE, AgentRunState.FAILED, AgentRunState.TIMEOUT,
+    AgentRunState.CANCELLED,
+}
 
 class ErrorType(str, Enum):
     NIM_TIMEOUT = "NIM_TIMEOUT"
@@ -89,9 +99,15 @@ class AgentRunRecord(BaseModel):
     error: Optional[str] = None
     timing_logs: List[TimingEvent] = Field(default_factory=list)
     diagnostics: List[TimeoutDiagnostic] = Field(default_factory=list)
+    # Task-completion verification metadata (distinct from `status`/`error`
+    # above): what was actually verified against the user's request, so the
+    # UI/final response can never claim more than what was proven true.
+    verified_count: Optional[int] = None
+    requested_count: Optional[int] = None
 
 class AsyncAgentManager:
     """Central registry and executor for asynchronous long-running agent runs."""
+
 
     def __init__(self):
         self._runs: Dict[str, AgentRunRecord] = {}
@@ -137,7 +153,7 @@ class AsyncAgentManager:
         if not record:
             return False
 
-        if record.status in (AgentRunState.COMPLETED, AgentRunState.FAILED, AgentRunState.TIMEOUT, AgentRunState.CANCELLED):
+        if record.status in TERMINAL_RUN_STATES:
             return False
 
         evt = self._cancellation_events.get(run_id)
@@ -184,6 +200,11 @@ class AsyncAgentManager:
             duration_ms=duration_ms
         )
         record.timing_logs.append(ev)
+        # Keep the record's live iteration counter monotonic and accurate so
+        # `GET /chat/runs/{run_id}` reflects real progress instead of staying
+        # stuck at whatever value was set once at run creation.
+        if iteration > record.iteration:
+            record.iteration = iteration
         logger.info(f"[{event_name}] run_id={run_id} iter={iteration} tool={tool} duration={duration_ms}ms")
         self._broadcast(run_id, {"type": "timing", "event": ev.model_dump()})
 
@@ -225,9 +246,20 @@ class AsyncAgentManager:
         response_text: str,
         tool_results: List[Dict[str, Any]],
         error: Optional[str] = None,
-        is_timeout: bool = False
+        is_timeout: bool = False,
+        completion_status: Optional[AgentRunState] = None,
+        verified_count: Optional[int] = None,
+        requested_count: Optional[int] = None,
     ):
-        """Finalize an agent run and notify listeners."""
+        """
+        Finalize an agent run and notify listeners.
+
+        `completion_status` lets callers report the TRUE task-completion verdict
+        (COMPLETED / PARTIAL / NO_RESULTS / TOOL_UNAVAILABLE / WAITING_FOR_USER /
+        ...) instead of this method always collapsing every non-error outcome
+        into a blanket COMPLETED. If omitted, falls back to the previous
+        error/is_timeout-only inference for backward compatibility.
+        """
         record = self._runs.get(run_id)
         if not record:
             return
@@ -237,8 +269,13 @@ class AsyncAgentManager:
         record.final_response = response_text
         record.tool_results = tool_results
         record.error = error
+        record.verified_count = verified_count
+        record.requested_count = requested_count
 
-        if is_timeout:
+        if completion_status is not None:
+            record.status = completion_status
+            self.log_timing(run_id, f"agent_run_{completion_status.value.lower()}", record.execution_time_ms)
+        elif is_timeout:
             record.status = AgentRunState.TIMEOUT
             self.log_timing(run_id, "agent_run_timeout", record.execution_time_ms)
         elif error:
@@ -254,7 +291,9 @@ class AsyncAgentManager:
             "reply": response_text,
             "tool_results": tool_results,
             "error": error,
-            "execution_time_ms": record.execution_time_ms
+            "execution_time_ms": record.execution_time_ms,
+            "verified_count": verified_count,
+            "requested_count": requested_count,
         })
 
     def _broadcast(self, run_id: str, message: Dict[str, Any]):
@@ -290,7 +329,7 @@ class AsyncAgentManager:
             while True:
                 msg = await q.get()
                 yield msg
-                if msg.get("type") in ("completed", "status") and msg.get("status") in ("COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"):
+                if msg.get("type") in ("completed", "status") and msg.get("status") in {s.value for s in TERMINAL_RUN_STATES}:
                     break
         finally:
             if run_id in self._queues and q in self._queues[run_id]:

@@ -1038,6 +1038,11 @@ body {
   border-color: var(--border-light);
 }
 
+.retry-continue-btn {
+  border-color: var(--border-light);
+  font-weight: 600;
+}
+
 .msg-action-btn.icon-only {
   padding: 4px 6px;
 }
