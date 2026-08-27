@@ -533,6 +533,17 @@ def execute_tool_calling_flow(
                 async_agent_manager.complete_run(run_id, "Execution was cancelled.", tool_results_list, error="CANCELLED")
                 raise LLMCancelledError("Agent execution was cancelled by user.")
             else:
+                # Graceful direct LLM invocation fallback if tool binding fails or model lacks tool support
+                try:
+                    async_agent_manager.set_state(run_id, AgentRunState.WAITING_FOR_LLM, "Synthesizing response")
+                    direct_resp = invoke_llm_with_diagnostics(llm, messages, run_id=run_id, iteration=0)
+                    direct_text = extract_clean_text(direct_resp)
+                    if direct_text and len(direct_text) > 10:
+                        async_agent_manager.complete_run(run_id, direct_text, tool_results_list, completion_status="COMPLETED")
+                        return direct_text, tool_results_list, "Direct AI Assistant"
+                except Exception:
+                    pass
+
                 synth = synthesize_tool_results_into_markdown(user_prompt, tool_results_list)
                 if synth:
                     async_agent_manager.complete_run(run_id, synth, tool_results_list)

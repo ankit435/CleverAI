@@ -27,11 +27,34 @@ function terms(text: string): Set<string> {
 }
 
 function selectDocumentContext(documents: Array<{ filename: string; chunks: Array<{ heading: string | null; content: string }> }>, message: string): DocumentContext[] {
+  if (!documents.length) return [];
+
+  // For small-to-medium documents (<= 24 chunks total, typical for resumes/PDFs/reports),
+  // supply all chunks in natural document order so the model has complete document visibility.
+  const totalChunks = documents.reduce((sum, d) => sum + d.chunks.length, 0);
+  if (totalChunks <= 24) {
+    return documents.flatMap(d => d.chunks.map(chunk => ({
+      filename: d.filename,
+      heading: chunk.heading,
+      content: chunk.content
+    })));
+  }
+
   const queryTerms = terms(message);
-  return documents.flatMap(document => document.chunks.map(chunk => ({
-    filename: document.filename, heading: chunk.heading, content: chunk.content,
+  const scored = documents.flatMap(document => document.chunks.map(chunk => ({
+    filename: document.filename,
+    heading: chunk.heading,
+    content: chunk.content,
     score: [...queryTerms].filter(word => `${chunk.heading || ''} ${chunk.content}`.toLowerCase().includes(word)).length
-  }))).sort((a, b) => b.score - a.score).slice(0, 8)
+  })));
+
+  const hasKeywordMatches = scored.some(s => s.score > 0);
+  if (!hasKeywordMatches) {
+    // Fallback for general prompts like "read this", "summarize": take the first 16 sequential chunks
+    return scored.slice(0, 16).map(({ filename, heading, content }) => ({ filename, heading, content }));
+  }
+
+  return scored.sort((a, b) => b.score - a.score).slice(0, 16)
     .map(({ filename, heading, content }) => ({ filename, heading, content }));
 }
 
@@ -272,7 +295,6 @@ chatRouter.post('/runs/:runId/cancel', async (req: AuthenticatedRequest, res: Re
     try {
       await fetch(`${PYTHON_SERVER_URL}/api/v1/chat/runs/${runId}/cancel`, {
         method: 'POST',
-        signal: AbortSignal.timeout(3000)
       });
     } catch {}
 

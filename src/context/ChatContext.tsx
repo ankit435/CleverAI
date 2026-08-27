@@ -901,13 +901,21 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       let documentIds: string[] | undefined = undefined;
 
       if (attachedFile) {
+        updateAiMessage(currentThreadId, aiMsgId, { statusText: `Reading attached file "${attachedFile.name}"…` });
         try {
           const docRes = await apiClient.documents.upload(attachedFile);
           if (docRes.document?.id) {
             documentIds = [docRes.document.id];
           }
-        } catch (docErr) {
-          console.warn('Document upload error:', docErr);
+        } catch (docErr: any) {
+          console.error('Document upload error:', docErr);
+          updateAiMessage(currentThreadId, aiMsgId, {
+            text: `⚠️ **Unable to process document "${attachedFile.name}":**\n\n${docErr.message || 'The server could not read or convert this document.'}\n\nPlease check that the file is not corrupted, make sure you are logged in, and try again.`,
+            statusText: undefined,
+            isStreaming: false
+          });
+          setIsGenerating(false);
+          return;
         }
       }
 

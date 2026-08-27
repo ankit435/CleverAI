@@ -51,6 +51,7 @@ async def convert_upload(upload: UploadFile) -> Dict[str, Any]:
     raw_bytes = await upload.read()
 
     markdown = ""
+    # 1. Primary extractor: MarkItDown
     try:
         from markitdown import MarkItDown
         with NamedTemporaryFile(suffix=suffix, delete=False) as temp:
@@ -61,16 +62,40 @@ async def convert_upload(upload: UploadFile) -> Dict[str, Any]:
             markdown = (getattr(res, 'text_content', '') or str(res)).strip()
         finally:
             temporary_path.unlink(missing_ok=True)
-    except Exception as exc:
-        if suffix in {'.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm'}:
-            try:
-                markdown = raw_bytes.decode('utf-8', errors='replace').strip()
-            except Exception:
-                pass
+    except Exception:
+        markdown = ""
 
-    if not markdown:
+    # 2. PDF Fallback: pdfplumber & pdfminer.six for robust PDF text & table extraction
+    if suffix == '.pdf' and (not markdown or len(markdown) < 20):
+        try:
+            import pdfplumber
+            import io
+            with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+                pages_text = []
+                for i, page in enumerate(pdf.pages):
+                    p_text = page.extract_text()
+                    if p_text and p_text.strip():
+                        pages_text.append(f"## Page {i + 1}\n\n{p_text.strip()}")
+                if pages_text:
+                    markdown = '\n\n'.join(pages_text)
+        except Exception:
+            pass
+
+    # 3. Plaintext/UTF-8 fallback for textual documents
+    if not markdown and suffix in {'.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm'}:
         try:
             markdown = raw_bytes.decode('utf-8', errors='replace').strip()
+        except Exception:
+            pass
+
+    # 4. Binary/Raw fallback decode if still empty
+    if not markdown:
+        try:
+            decoded = raw_bytes.decode('utf-8', errors='replace').strip()
+            # Only use if printable characters dominate
+            printable = sum(1 for c in decoded if c.isprintable() or c in '\n\r\t')
+            if printable > len(decoded) * 0.7:
+                markdown = decoded
         except Exception:
             pass
 
